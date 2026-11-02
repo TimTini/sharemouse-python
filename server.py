@@ -128,6 +128,11 @@ class MouseServer:
             self._on_move(x, y)
         except Exception:
             logger.exception('move')
+        # Keep the local cursor parked. If this move is delivered, Windows puts
+        # it back on the physical spot (the screen edge). The next delta is then
+        # "edge minus center", and the other PC's pointer sticks to the far side.
+        if self.control_active:
+            self._swallow_mouse()
 
     def _on_move(self, x, y):
         if not self.control_active:

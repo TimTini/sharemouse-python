@@ -3,6 +3,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
+from pynput._util.win32 import SystemHook
 from pynput.keyboard import Key
 from pynput.mouse import Button
 
@@ -95,6 +96,30 @@ async def check():
         info.assert_any_call('client %r at %s on %s (%d connected)',
                              'CLIENT-PC', peer.remote_address, 'left', 1)
     assert not server.clients
+
+    # Captured moves must be swallowed. Otherwise the cursor stays on the edge
+    # and every delta is "edge - center" (2K center is 1280; left edge -> about -1270).
+    with patch('server.get_screen_size', return_value=(2560, 1440)):
+        server = MouseServer()
+    server.running = True
+    server.control_active = True
+    server.mouse_listener = Mock()
+    server.mouse_listener.suppress_event.side_effect = SystemHook.SuppressException
+    emitted = []
+    server._emit = emitted.append
+    server._place = Mock()
+    try:
+        server.on_move(10, 100)
+    except SystemHook.SuppressException:
+        pass
+    else:
+        raise AssertionError('captured move was not swallowed')
+    assert emitted == [{'type': 'move', 'delta_x': 10 - 1280, 'delta_y': 100 - 720}]
+    server._place.assert_called_once_with(1280, 720)
+
+    server.control_active = False
+    server.on_move(400, 400)
+    assert server.mouse_listener.suppress_event.call_count == 1
 
 
 if __name__ == '__main__':

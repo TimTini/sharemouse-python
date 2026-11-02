@@ -60,15 +60,15 @@ def run():
                     patch('run_sharemouse.run', new=AsyncMock()) as start:
                 assert run_sharemouse.main(['--config', str(path), '--interactive']) == 0
                 start.assert_not_called()
-            found = [{'host': '192.168.50.230', 'machine': 'SERVER-PC'}]
-            with patch('configure.get_lan_networks', return_value=[ipaddress.ip_network('192.168.50.0/24')]), \
+            found = [{'host': '192.168.8.20', 'machine': 'SERVER-PC'}]
+            with patch('configure.get_lan_networks', return_value=[ipaddress.ip_network('192.168.8.0/24')]), \
                     patch('configure.discover_servers', new=AsyncMock(return_value=found)), \
                     patch('builtins.input', side_effect=['2', '', '1', '2']):
                 assert configure.main(['--config', str(path)]) == 0
             config = configure.load_config(path)
-            assert config['host'] == '192.168.50.230' and config['position'] == 'left'
+            assert config['host'] == '192.168.8.20' and config['position'] == 'left'
             with patch('configure.get_lan_networks', return_value=[]), \
-                    patch('builtins.input', side_effect=['2', '', '0', '192.168.50.99', '4']):
+                    patch('builtins.input', side_effect=['2', '', '0', '192.168.8.99', '4']):
                 assert configure.main(['--config', str(path)]) == 0
             assert configure.load_config(path)['position'] == 'bottom'
             with patch('builtins.input', side_effect=['0']):
@@ -76,14 +76,14 @@ def run():
             with patch('builtins.input', side_effect=['1']), \
                     patch('run_sharemouse.run', new=AsyncMock()) as start:
                 assert run_sharemouse.main(['--config', str(path), '--interactive']) == 0
-                assert start.call_args.args[0]['host'] == '192.168.50.99'
+                assert start.call_args.args[0]['host'] == '192.168.8.99'
 
-    records = [{'Address': '192.168.50.219', 'PrefixLength': 24},
+    records = [{'Address': '192.168.8.19', 'PrefixLength': 24},
                {'Address': '100.64.0.1', 'PrefixLength': 10},
                {'Address': '127.0.0.1', 'PrefixLength': 24}]
     with patch('configure.platform.system', return_value='Windows'), \
             patch('configure.subprocess.run', return_value=Mock(stdout=json.dumps(records))):
-        assert configure.get_lan_networks() == [ipaddress.ip_network('192.168.50.0/24')]
+        assert configure.get_lan_networks() == [ipaddress.ip_network('192.168.8.0/24')]
     asyncio.run(check_discovery())
     # Exercise actual CMD entrypoints without changing config or starting hooks.
     if __import__('sys').platform == 'win32' and Path(__file__).with_name('.venv').exists():

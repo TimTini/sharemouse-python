@@ -8,13 +8,6 @@ def test_imports():
     print("Testing imports...")
     
     try:
-        import pyautogui
-        print("✓ pyautogui imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import pyautogui: {e}")
-        return False
-    
-    try:
         import pynput
         print("✓ pynput imported successfully")
     except ImportError as e:
@@ -36,10 +29,10 @@ def test_screen_detection():
     print("\nTesting screen detection...")
     
     try:
-        import pyautogui
-        width, height = pyautogui.size()
+        from utils import get_screen_size
+        width, height = get_screen_size()
         print(f"✓ Screen size detected: {width}x{height}")
-        return True
+        return width > 0 and height > 0
     except Exception as e:
         print(f"✗ Failed to detect screen size: {e}")
         return False
@@ -50,9 +43,8 @@ def test_mouse_control():
     print("\nTesting mouse control...")
     
     try:
-        import pyautogui
-        current_pos = pyautogui.position()
-        print(f"✓ Current mouse position: {current_pos}")
+        from pynput.mouse import Controller
+        print(f"✓ Current mouse position: {Controller().position}")
         print("✓ Mouse control available")
         return True
     except Exception as e:
