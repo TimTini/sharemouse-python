@@ -1,5 +1,5 @@
 """Menu and real loopback discovery checks; never install packages or inject input."""
-import asyncio
+import link
 import contextlib
 import io
 import ipaddress
@@ -25,8 +25,8 @@ async def check_discovery():
         server_tls, client_tls = root / 'server', root / 'client'
         link.ensure_identity(server_tls)
         link.ensure_identity(client_tls)
-        link.import_peer(server_tls, client_tls / 'cert.pem')
-        link.import_peer(client_tls, server_tls / 'cert.pem')
+        link.trust_certificate(server_tls, (client_tls / 'cert.pem').read_text())
+        link.trust_certificate(client_tls, (server_tls / 'cert.pem').read_text())
         with patch('server.get_screen_size', return_value=(800, 600)):
             app = MouseServer()
         async with link.serve(app.handle_client, '127.0.0.1', 0, ssl=link.server_context(server_tls)) as listener:
@@ -64,7 +64,7 @@ def run():
     with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
         path = Path(folder) / 'config.json'
         with contextlib.redirect_stdout(io.StringIO()):
-            with patch('builtins.input', side_effect=['x', '1', '', '']):
+            with patch('builtins.input', side_effect=['x', '1', '']):
                 assert configure.main(['--config', str(path)]) == 0
             assert configure.load_config(path)['role'] == 'server'
             with patch('builtins.input', side_effect=['1']), \
@@ -75,20 +75,22 @@ def run():
             found = [{'host': '192.168.8.20', 'machine': 'SERVER-PC'}]
             with patch('configure.get_lan_networks', return_value=[ipaddress.ip_network('192.168.8.0/24')]), \
                     patch('configure.discover_servers', new=AsyncMock(return_value=found)), \
-                    patch('builtins.input', side_effect=['2', '', '', '1', '2']):
+                    patch('builtins.input', side_effect=['2', '', '1', '2']):
                 assert configure.main(['--config', str(path)]) == 0
             config = configure.load_config(path)
             assert config['host'] == '192.168.8.20' and config['position'] == 'left'
             with patch('configure.get_lan_networks', return_value=[]), \
-                    patch('builtins.input', side_effect=['2', '', '', '0', '192.168.8.99', '4']):
+                    patch('builtins.input', side_effect=['2', '', '0', '192.168.8.99', '4']):
                 assert configure.main(['--config', str(path)]) == 0
             assert configure.load_config(path)['position'] == 'bottom'
             with patch('builtins.input', side_effect=['0']):
                 assert run_sharemouse.main(['--config', str(path), '--interactive']) == 0
             with patch('builtins.input', side_effect=['1']), \
+                    patch('run_sharemouse.pair_device') as pair, \
                     patch('run_sharemouse.run', new=AsyncMock()) as start:
                 assert run_sharemouse.main(['--config', str(path), '--interactive']) == 0
                 assert start.call_args.args[0]['host'] == '192.168.8.99'
+                pair.assert_called_once()
 
     records = [{'Address': '192.168.8.19', 'PrefixLength': 24},
                {'Address': '100.64.0.1', 'PrefixLength': 10},
@@ -96,7 +98,7 @@ def run():
     with patch('configure.platform.system', return_value='Windows'), \
             patch('configure.subprocess.run', return_value=Mock(stdout=json.dumps(records))):
         assert configure.get_lan_networks() == [ipaddress.ip_network('192.168.8.0/24')]
-    asyncio.run(check_discovery())
+    link.run(check_discovery())
     # Exercise actual CMD entrypoints without changing config or starting hooks.
     if __import__('sys').platform == 'win32' and (ROOT / '.venv').exists():
         root = ROOT

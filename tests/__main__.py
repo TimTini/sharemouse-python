@@ -12,7 +12,7 @@ def main():
     parser.add_argument('--hardware', action='store_true', help='also read actual display and pointer state')
     args = parser.parse_args()
     modules = ['test_logic', 'test_resolutions', 'test_input_cleanup', 'test_recovery',
-               'test_scripts', 'test_launcher', 'test_link']
+               'test_scripts', 'test_launcher', 'test_link', 'test_pairing']
     if args.hardware:
         modules.append('test_setup')
     scratch = ROOT / '.cache' / 'tests'

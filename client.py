@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import socket
-import sys
 
 import link
 from devices import Button, KeyController, MouseController
@@ -89,7 +88,7 @@ class MouseClient:
         if self.tls_dir is not None:
             if not link.peer_certs(self.tls_dir):
                 raise ValueError(
-                    "No paired certificate. Copy the server tls/cert.pem into this computer's tls/peers folder."
+                    'No paired server. Open run_sharemouse.cmd and pair using the server PIN.'
                 )
             ssl_context = link.client_context(self.tls_dir)
         self.running = True
@@ -263,27 +262,3 @@ class MouseClient:
         if self.power_monitor is not None:
             self.power_monitor.stop()
         logger.info('client stopped')
-
-
-if __name__ == '__main__':
-    server_uri = sys.argv[1] if len(sys.argv) > 1 else 'wss://localhost:8765'
-    position = sys.argv[2] if len(sys.argv) > 2 else 'right'
-    if position not in ('left', 'right', 'top', 'bottom'):
-        logger.error('position must be left, right, top, or bottom')
-        sys.exit(2)
-    if server_uri.startswith('ws://'):
-        server_uri = 'wss://' + server_uri[len('ws://'):]
-    tls_dir = link.default_tls_dir()
-    link.ensure_identity(tls_dir)
-    logger.info('TLS certificate %s', tls_dir / 'cert.pem')
-    logger.info('fingerprint %s', link.fingerprint(tls_dir / 'cert.pem'))
-    client = MouseClient(server_uri, position, tls_dir=tls_dir)
-    try:
-        asyncio.run(client.connect())
-    except KeyboardInterrupt:
-        logger.info('client shutdown')
-    except ValueError as error:
-        logger.error('%s', error)
-        raise SystemExit(2)
-    finally:
-        client.stop()

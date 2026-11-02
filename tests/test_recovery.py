@@ -206,6 +206,7 @@ async def check_silent_upgrade():
 
     writer = Mock()
     writer.drain = AsyncMock(side_effect=asyncio.Event().wait)
+    writer.wait_closed = AsyncMock()
     socket = link.Socket(Mock(), writer, ('127.0.0.1', 0), None, False)
     try:
         await asyncio.wait_for(socket.close(), 0.02)
@@ -242,4 +243,4 @@ async def check_transition_race():
 
 
 if __name__ == '__main__':
-    asyncio.run(check())
+    link.run(check())

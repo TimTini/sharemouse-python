@@ -1,9 +1,9 @@
 """Loopback WebSocket and mutual TLS checks; no input controllers."""
-import asyncio
 from pathlib import Path
 import ssl
+import link
 
-from link import (WebSocketException, connect, serve, ensure_identity, import_peer,
+from link import (WebSocketException, connect, serve, ensure_identity, trust_certificate,
                   server_context, client_context)
 
 async def check():
@@ -63,15 +63,15 @@ async def check_tls():
         ensure_identity(other_dir)
         ensure_identity(stranger_dir)
         try:
-            import_peer(server_dir, server_dir / 'cert.pem')
+            trust_certificate(server_dir, (server_dir / 'cert.pem').read_text())
             raise AssertionError('accepted this computer certificate as a peer')
         except ValueError:
             pass
-        import_peer(server_dir, client_dir / 'cert.pem')
-        import_peer(server_dir, other_dir / 'cert.pem')
-        import_peer(client_dir, server_dir / 'cert.pem')
-        import_peer(other_dir, server_dir / 'cert.pem')
-        import_peer(stranger_dir, server_dir / 'cert.pem')
+        trust_certificate(server_dir, (client_dir / 'cert.pem').read_text())
+        trust_certificate(server_dir, (other_dir / 'cert.pem').read_text())
+        trust_certificate(client_dir, (server_dir / 'cert.pem').read_text())
+        trust_certificate(other_dir, (server_dir / 'cert.pem').read_text())
+        trust_certificate(stranger_dir, (server_dir / 'cert.pem').read_text())
         async with serve(handler, '127.0.0.1', 0, ssl=server_context(server_dir)) as server:
             port = server.sockets[0].getsockname()[1]
             uri = f'wss://127.0.0.1:{port}'
@@ -92,5 +92,5 @@ async def check_tls():
 
 
 if __name__ == '__main__':
-    asyncio.run(check())
+    link.run(check())
     print('link and paired TLS: ok')

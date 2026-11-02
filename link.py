@@ -18,6 +18,13 @@ from pathlib import Path
 GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
 
+def run(coroutine):
+    # TCP only, at most 32 concurrent discovery sockets / four control peers.
+    # Windows Proactor shutdown can fail before detaching closed clients.
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        return runner.run(coroutine)
+
+
 class WebSocketException(Exception):
     pass
 
@@ -131,6 +138,7 @@ class Socket:
         self.max_size = max_size
         self._mask = mask
         self._closed = False
+        self._peer_closed = False
 
     async def send(self, message):
         data = message.encode('utf-8') if isinstance(message, str) else message
@@ -148,6 +156,7 @@ class Socket:
             if opcode == 0x1:
                 return payload.decode('utf-8')
             if opcode == 0x8:
+                self._peer_closed = True
                 raise ConnectionClosed()
             if opcode == 0x9:
                 await self._send_opcode(0xA, payload)
@@ -165,26 +174,33 @@ class Socket:
         except ConnectionClosed:
             raise StopAsyncIteration
 
-    async def close(self):
+    async def close(self, *, wait_peer=False):
         if self._closed:
             return
         self._closed = True
         try:
             self.writer.write(_encode_frame(0x8, b'', self._mask))
             await asyncio.wait_for(self.writer.drain(), 0.5)
-        except (OSError, TimeoutError, ConnectionClosed):
+            if wait_peer and not self._peer_closed:
+                # A completed handler owns the reader. Finish the WebSocket
+                # close handshake before TCP shutdown can discard its last reply.
+                async with asyncio.timeout(0.5):
+                    while True:
+                        await self.recv()
+        except (OSError, TimeoutError, WebSocketException):
             pass
         finally:
             try:
                 self.writer.close()
-            except OSError:
+                await asyncio.wait_for(self.writer.wait_closed(), 0.5)
+            except (OSError, TimeoutError):
                 pass
 
 
 async def _headers(reader):
     try:
         raw = await reader.readuntil(b'\r\n\r\n')
-    except (asyncio.IncompleteReadError, ConnectionError, OSError) as error:
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError, OSError) as error:
         raise ConnectionClosed() from error
     if len(raw) > 8192:
         raise WebSocketException('WebSocket headers are too large.')
@@ -232,41 +248,34 @@ async def _handshake(reader, writer, host, port):
 
 
 class Server:
-    def __init__(self, handler, host, port, ssl_context=None):
+    def __init__(self, handler, host, port, ssl_context=None, max_size=65536):
         self._handler = handler
         self._host = host
         self._port = port
         self._ssl = ssl_context
         self._server = None
         self.sockets = []
-        self._previous_handler = None
+        self._max_size = max_size
+        self._clients = set()
 
     async def __aenter__(self):
         options = {}
         if self._ssl is not None:
             options['ssl'] = self._ssl
             options['ssl_handshake_timeout'] = 5
-        self._server = await asyncio.start_server(self._on_client, self._host, self._port, **options)
+        self._server = await asyncio.start_server(self._on_client, self._host, self._port, limit=8192, **options)
         self.sockets = list(self._server.sockets)
-        loop = asyncio.get_running_loop()
-        self._previous_handler = loop.get_exception_handler()
-        loop.set_exception_handler(self._loop_error)
         return self
-
-    def _loop_error(self, loop, context):
-        error = context.get('exception')
-        # Windows closes an aborted TLS socket with WinError 10022. Nothing to report.
-        if isinstance(error, OSError) and getattr(error, 'winerror', None) == 10022:
-            return
-        if self._previous_handler is not None:
-            self._previous_handler(loop, context)
-            return
-        loop.default_exception_handler(context)
 
     async def __aexit__(self, exc_type, exc, tb):
         self._server.close()
+        tasks = list(self._clients)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=1)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self._server.wait_closed()
-        asyncio.get_running_loop().set_exception_handler(self._previous_handler)
         return False
 
     async def _on_client(self, reader, writer):
@@ -275,22 +284,31 @@ class Server:
             writer.close()
             return
         _nodelay(writer)
+        task = asyncio.current_task()
+        self._clients.add(task)
         socket = None
         try:
-            await _accept(reader, writer)
-            socket = Socket(reader, writer, writer.get_extra_info('peername'), None, mask=False)
+            await asyncio.wait_for(_accept(reader, writer), 3)
+            socket = Socket(reader, writer, writer.get_extra_info('peername'), self._max_size, mask=False)
             await self._handler(socket)
-        except (ConnectionClosed, WebSocketException):
+        except (ConnectionClosed, WebSocketException, TimeoutError):
             return
         finally:
-            if socket is not None:
-                await socket.close()
-            else:
-                writer.close()
+            try:
+                if socket is not None:
+                    await socket.close(wait_peer=True)
+                else:
+                    writer.close()
+                    try:
+                        await asyncio.wait_for(writer.wait_closed(), 0.5)
+                    except (OSError, TimeoutError):
+                        pass
+            finally:
+                self._clients.discard(task)
 
 
 class Connection:
-    def __init__(self, uri, open_timeout=10, close_timeout=2, max_size=None, ssl_context=None):
+    def __init__(self, uri, open_timeout=10, max_size=None, ssl_context=None):
         self._uri = uri
         self._open_timeout = open_timeout
         self._max_size = max_size
@@ -326,12 +344,12 @@ class Connection:
         return False
 
 
-def serve(handler, host, port, ssl=None):
-    return Server(handler, host, port, ssl)
+def serve(handler, host, port, ssl=None, max_size=65536):
+    return Server(handler, host, port, ssl, max_size)
 
 
-def connect(uri, open_timeout=10, close_timeout=2, max_size=None, ssl=None):
-    return Connection(uri, open_timeout, close_timeout, max_size, ssl)
+def connect(uri, open_timeout=10, max_size=None, ssl=None):
+    return Connection(uri, open_timeout, max_size, ssl)
 
 
 def default_tls_dir():
@@ -407,43 +425,19 @@ try {
     _run(['powershell.exe', '-NoProfile', '-Command', script], env)
 
 
-def _generate_openssl(cert_path, key_path, subject):
-    command = [
-        'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
-        '-keyout', str(key_path), '-out', str(cert_path),
-        '-days', '3650', '-nodes', '-subj', f'/CN={subject}',
-    ]
-    try:
-        _run(command + [
-            '-addext', 'basicConstraints=critical,CA:TRUE',
-            '-addext', 'keyUsage=digitalSignature,keyEncipherment,keyCertSign',
-            '-addext', 'extendedKeyUsage=serverAuth,clientAuth',
-        ])
-    except FileNotFoundError as error:
-        raise ValueError('OpenSSL is required to create the TLS certificate on this system.') from error
-    except (OSError, ValueError):
-        cert_path.unlink(missing_ok=True)
-        key_path.unlink(missing_ok=True)
-        try:
-            _run(command)
-        except FileNotFoundError as error:
-            raise ValueError('OpenSSL is required to create the TLS certificate on this system.') from error
-
-
 def _generate_identity(cert_path, key_path):
+    if platform.system() != 'Windows':
+        raise OSError('This build supports Windows only.')
     subject = f'sharemouse-{os.urandom(8).hex()}'
-    if platform.system() == 'Windows':
-        cert_der = cert_path.with_suffix('.der')
-        key_der = key_path.with_suffix('.der')
-        try:
-            _generate_windows(cert_der, key_der, subject)
-            cert_path.write_text(_pem('CERTIFICATE', cert_der.read_bytes()), encoding='ascii')
-            key_path.write_text(_pem('PRIVATE KEY', key_der.read_bytes()), encoding='ascii')
-        finally:
-            cert_der.unlink(missing_ok=True)
-            key_der.unlink(missing_ok=True)
-        return
-    _generate_openssl(cert_path, key_path, subject)
+    cert_der = cert_path.with_suffix('.der')
+    key_der = key_path.with_suffix('.der')
+    try:
+        _generate_windows(cert_der, key_der, subject)
+        cert_path.write_text(_pem('CERTIFICATE', cert_der.read_bytes()), encoding='ascii')
+        key_path.write_text(_pem('PRIVATE KEY', key_der.read_bytes()), encoding='ascii')
+    finally:
+        cert_der.unlink(missing_ok=True)
+        key_der.unlink(missing_ok=True)
 
 
 def ensure_identity(directory):
@@ -467,22 +461,21 @@ def ensure_identity(directory):
     return cert
 
 
-def import_peer(directory, source):
-    """Trust another computer's public certificate. Do not copy its private key."""
+def trust_certificate(directory, text):
+    """Persist a public certificate after the pairing protocol authenticates it."""
     directory = Path(directory)
-    source = Path(source)
-    if not source.is_file():
-        raise ValueError(f'Certificate file not found: {source}')
-    text = source.read_text(encoding='utf-8')
     der = _certificate_der(text)
     own = directory / 'cert.pem'
     if own.is_file() and _certificate_der(own.read_text(encoding='utf-8')) == der:
-        raise ValueError("That file is this computer's certificate. Choose the other computer's tls/cert.pem.")
+        raise ValueError("Cannot trust this computer as a remote peer. Pair with the other computer.")
     peers = directory / 'peers'
     peers.mkdir(parents=True, exist_ok=True)
-    dest = peers / f'{hashlib.sha256(der).hexdigest()[:20]}.pem'
-    dest.write_text(text if text.endswith('\n') else text + '\n', encoding='utf-8')
-    return dest
+    dest = peers / f'{hashlib.sha256(der).hexdigest()}.pem'
+    created = not dest.exists()
+    temporary = peers / (dest.name + '.tmp')
+    temporary.write_text(ssl.DER_cert_to_PEM_cert(der), encoding='ascii')
+    temporary.replace(dest)
+    return dest, created
 
 
 def tls_context(directory, server):

@@ -89,8 +89,8 @@ def main():
         print(f"✓ All tests passed ({passed}/{total})")
         print("\nYou're ready to use Mouse Sync!")
         print("\nNext steps:")
-        print("1. Run server: python server.py")
-        print("2. Run client: python client.py")
+        print("1. Double-click configure.cmd to choose server/client.")
+        print("2. Double-click run_sharemouse.cmd to pair by PIN and run.")
         return 0
     else:
         print(f"✗ Some tests failed ({passed}/{total} passed)")

@@ -27,6 +27,7 @@ ENV/
 .venv
 /.cache/pip/
 /.cache/tests/
+/.cache/setup/
 
 # IDE
 .vscode/

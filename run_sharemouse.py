@@ -1,8 +1,9 @@
 """Run the server/client role saved by configure.py on this computer."""
 import argparse
-import asyncio
+import link
 import importlib
 import importlib.metadata
+import getpass
 from pathlib import Path
 import re
 import sys
@@ -22,17 +23,30 @@ def check_dependencies():
         line = line.strip()
         if not line or line.startswith('#'):
             continue
+        match = re.match(r'^([A-Za-z0-9_-]+)==([0-9.]+)', line)
+        if match is None:
+            continue  # SHA256 continuation lines belong to the preceding requirement.
         try:
-            name, minimum = line.split('>=')
+            name, required = match.groups()
             installed = importlib.metadata.version(name)
-            version = tuple(map(int, re.match(r'\d+(?:\.\d+)*', installed).group().split('.')))
-            if version < tuple(map(int, minimum.split('.'))):
-                raise ImportError(f'{name} {installed} is older than required {minimum}')
+            if installed != required:
+                raise ImportError(f'{name} {required} is required; installed {installed}')
             importlib.import_module(name)
         except (ImportError, ValueError, AttributeError) as error:
             print(f'Dependency check failed: {error}', file=sys.stderr)
             return 1
     return 0
+
+
+def pair_device(config, tls_dir):
+    import pairing
+    link.ensure_identity(tls_dir)
+    if config['role'] == 'server':
+        link.run(pairing.open_server(config['host'], config['port'], tls_dir))
+    else:
+        pin = getpass.getpass('Eight-digit PIN shown on the server: ').strip()
+        link.run(pairing.pair_client(config['host'], config['port'], tls_dir, pin))
+        print('Server paired. Normal control uses authenticated TLS.')
 
 
 async def run(config):
@@ -69,8 +83,8 @@ def main(argv=None):
     try:
         if args.interactive and not args.check:
             while True:
-                print('\n1. Run ShareMouse\n2. Configure server/client\n3. Show saved configuration\n0. Exit')
-                choice = input('Select [0-3]: ').strip()
+                print('\n1. Run ShareMouse\n2. Configure server/client\n3. Show saved configuration\n4. Pair new device (stop the server Run window first)\n0. Exit')
+                choice = input('Select [0-4]: ').strip()
                 if choice == '0':
                     return 0
                 if choice == '2' or (choice == '1' and not args.config.exists()):
@@ -78,17 +92,23 @@ def main(argv=None):
                     if result:
                         print('Configuration was not saved. Please try again.')
                     continue
-                if choice in ('1', '3'):
+                if choice in ('1', '3', '4'):
                     try:
                         show_config(load_config(args.config), tls_directory(args.config))
                     except (OSError, ValueError) as error:
                         print(f'Cannot use saved configuration: {error}\nSelect 2 to configure this computer.')
                         continue
+                    if choice == '4':
+                        try:
+                            pair_device(load_config(args.config), tls_directory(args.config))
+                        except (OSError, ValueError) as error:
+                            print(f'Pairing failed: {error}')
+                        continue
                     if choice == '1':
                         config = load_config(args.config)
                         if config['role'] == 'server':
                             host = '127.0.0.1' if config['host'] == '0.0.0.0' else config['host']
-                            if asyncio.run(probe_server(host, config['port'], tls_directory(args.config))):
+                            if link.run(probe_server(host, config['port'], tls_directory(args.config))):
                                 print('ShareMouse server is already running on this port. No duplicate started.')
                                 return 0
                         break
@@ -96,15 +116,16 @@ def main(argv=None):
                     print('Invalid selection.')
         config = load_config(args.config)
         if not args.check:
-            import link
             tls_dir = tls_directory(args.config)
             link.ensure_identity(tls_dir)
             config['tls_dir'] = str(tls_dir)
+            if not link.peer_certs(tls_dir):
+                pair_device(config, tls_dir)
         show_config(config, tls_directory(args.config))
         if args.check:
             return 0
         print('Move the server mouse to the client-facing edge. Ctrl+C stops this process.')
-        asyncio.run(run(config))
+        link.run(run(config))
         return 0
     except KeyboardInterrupt:
         return 0

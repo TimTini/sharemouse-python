@@ -1,6 +1,7 @@
 """Save or inspect this computer's ShareMouse role without starting input hooks."""
 import argparse
 import asyncio
+import link
 from datetime import datetime
 import ipaddress
 import json
@@ -62,34 +63,36 @@ def get_lan_networks():
 
 
 async def probe_server(host, port, tls_dir=None):
-    import link
     directory = link.resolve_tls_dir(tls_dir)
-    try:
-        context = link.client_context(directory)
-        async with link.connect(f'wss://{host}:{port}', open_timeout=1.5,
-                                 close_timeout=0.2, max_size=4096, ssl=context) as ws:
-            await ws.send(json.dumps({'type': 'discover'}))
-            reply = json.loads(await asyncio.wait_for(ws.recv(), 0.8))
-            if isinstance(reply, dict) and reply.get('type') == 'server_info' and reply.get('protocol') == 'sharemouse-python':
-                name = reply.get('machine')
-                if isinstance(name, str) and name:
-                    return {'host': host, 'machine': ''.join(c if c.isprintable() else '?' for c in name)[:80]}
-    except (OSError, TimeoutError, ValueError, link.WebSocketException, ssl.SSLError):
-        pass  # A closed port or another service is not a ShareMouse server.
+    address = f'[{host}]' if ':' in host else host
+    # A fresh client can discover an explicitly opened pairing window without
+    # attempting TLS against its temporary plaintext bootstrap listener.
+    attempts = [(f'ws://{address}:{port}', None)]
+    if link.has_identity(directory) and link.peer_certs(directory):
+        try:
+            attempts.append((server_uri({'host': host, 'port': port}), link.client_context(directory)))
+        except (OSError, ValueError):
+            pass
+    for uri, context in attempts:
+        try:
+            async with link.connect(uri, open_timeout=0.8, max_size=4096, ssl=context) as ws:
+                await ws.send(json.dumps({'type': 'discover'}))
+                reply = json.loads(await asyncio.wait_for(ws.recv(), 0.8))
+                if isinstance(reply, dict) and reply.get('type') == 'server_info' and reply.get('protocol') == 'sharemouse-python':
+                    name = reply.get('machine')
+                    pairing = reply.get('pairing') is True
+                    if isinstance(name, str) and name and (context is not None or pairing):
+                        return {'host': host, 'machine': ''.join(c if c.isprintable() else '?' for c in name)[:80],
+                                'pairing': pairing}
+        except (OSError, TimeoutError, ValueError, link.WebSocketException, ssl.SSLError):
+            pass
     return None
 
 
 async def discover_servers(networks, port, tls_dir=None):
-    import link
     if len(networks) != 1 or networks[0].num_addresses > 256:
         raise ValueError('Automatic scan requires one IPv4 LAN with at most 256 addresses. Enter the IP manually.')
     directory = link.resolve_tls_dir(tls_dir)
-    if not link.has_identity(directory):
-        print('No TLS certificate on this computer. Run configure.py here first.')
-        return []
-    if not link.peer_certs(directory):
-        print("No paired certificate. Copy the server tls/cert.pem into this computer's tls/peers folder, then scan again.")
-        return []
     limit = asyncio.Semaphore(32)
 
     async def check(host):
@@ -105,15 +108,16 @@ def choose_server(port, tls_dir):
     print(f'Scanning the preferred LAN for ShareMouse servers on TCP {port}...')
     try:
         networks = get_lan_networks()
-        found = asyncio.run(discover_servers(networks, port, tls_dir)) if networks else []
+        found = link.run(discover_servers(networks, port, tls_dir)) if networks else []
     except (OSError, ValueError, subprocess.SubprocessError, ImportError) as error:
         print(f'Cannot scan automatically: {error}')
         found = []
     for index, server in enumerate(found, 1):
-        print(f"  {index}. {server['machine']} - {server['host']}:{port}")
+        mode = 'enter PIN to pair' if server.get('pairing') else 'paired TLS'
+        print(f"  {index}. {server['machine']} - {server['host']}:{port} ({mode})")
     if not found:
         print('No server found. Start the server first, or enter its IP manually.')
-        print('If it is already running, copy each tls/cert.pem into the other tls/peers folder and restart the server.')
+        print('For a new client, open Pair new device on the server Run menu so it displays a PIN.')
     print('  0. Enter local IP manually')
     while True:
         choice = input('Select number or type server local IP: ').strip()
@@ -147,7 +151,6 @@ def validate_config(config):
     host = config.get('host')
     if not isinstance(host, str) or not host:
         raise ValueError('Enter a local IP address.')
-    import link
     allowed = host in ('0.0.0.0', '::') if config['role'] == 'server' else host.lower() == 'localhost'
     if not allowed and not link.is_local_ip(host):
         raise ValueError('Host must be a local IP address, not a public address or hostname.')
@@ -175,7 +178,6 @@ def tls_directory(config_path):
 
 
 def show_tls(tls_dir):
-    import link
     directory = Path(tls_dir)
     cert = directory / 'cert.pem'
     if not cert.is_file():
@@ -183,19 +185,8 @@ def show_tls(tls_dir):
         return
     print(f'TLS fingerprint: {link.fingerprint(cert)}')
     print(f'Certificate file: {cert}')
-    print('Copy this cert.pem into the other computer tls/peers folder. Leave key.pem on this computer.')
+    print('Pair through the Run menu using the server PIN. No certificate copying is needed.')
     print(f'Trusted peer certificates: {len(link.peer_certs(directory))}')
-
-
-def prompt_peer(tls_dir):
-    import link
-    entered = input('Path to the other computer tls/cert.pem (Enter to skip): ').strip().strip('"')
-    if not entered:
-        print('Skipped pairing. Copy the certificate into tls/peers later, then restart.')
-        return
-    dest = link.import_peer(tls_dir, entered)
-    print(f'Trusted peer certificate: {dest}')
-    print('Restart ShareMouse if it is already running.')
 
 
 def show_config(config, tls_dir=None):
@@ -223,14 +214,12 @@ def main(argv=None):
     parser.add_argument('--host', help='server bind address or client target local IP')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--position', choices=POSITIONS)
-    parser.add_argument('--peer-cert', type=Path, help='PEM certificate of the other computer')
     args = parser.parse_args(argv)
     try:
         if args.show:
             show_config(load_config(args.config), tls_directory(args.config))
             return 0
         role = args.role
-        menu = role is None
         if role is None:
             while True:
                 print('\n1. SERVER - use this PC mouse/keyboard\n2. CLIENT - control this PC from server\n3. Show saved configuration\n0. Exit')
@@ -248,13 +237,8 @@ def main(argv=None):
                     break
                 else:
                     print('Invalid selection.')
-        import link
         tls_dir = tls_directory(args.config)
         link.ensure_identity(tls_dir)
-        if args.peer_cert:
-            link.import_peer(tls_dir, args.peer_cert)
-        elif menu and role == 'client' and args.host is None:
-            prompt_peer(tls_dir)
         host = args.host
         if host is None:
             host = '0.0.0.0' if role == 'server' else choose_server(args.port, tls_dir)
@@ -273,8 +257,7 @@ def main(argv=None):
         temporary.replace(args.config)
         print(f'Saved: {args.config.resolve()}')
         show_config(config, tls_dir)
-        if menu and role == 'server' and not args.peer_cert:
-            prompt_peer(tls_dir)
+        print('Next: open run_sharemouse.cmd. A new server displays a PIN; the client enters it.')
         return 0
     except (OSError, ValueError, EOFError) as error:
         print(f'Configuration error: {error}', file=sys.stderr)

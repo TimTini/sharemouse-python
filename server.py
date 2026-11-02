@@ -387,6 +387,8 @@ class MouseServer:
         self.tls_dir = link.resolve_tls_dir(self.tls_dir)
         ssl_context = link.server_context(self.tls_dir)
         peers = link.peer_certs(self.tls_dir)
+        if not peers:
+            raise ValueError('No paired client. Open run_sharemouse.cmd and pair using its PIN menu.')
         self.running = True
         self.loop = asyncio.get_running_loop()
         self.mouse_listener = MouseListener(
@@ -402,11 +404,7 @@ class MouseServer:
         self.keyboard_listener.start()
         logger.info('listening on %s:%s', self.host, self.port)
         logger.info('TLS fingerprint %s', link.fingerprint(self.tls_dir / 'cert.pem'))
-        if peers:
-            logger.info('trusted peer certificates: %d', len(peers))
-        else:
-            logger.warning('no peer certificate in %s; copy the client tls/cert.pem there and restart',
-                           self.tls_dir / 'peers')
+        logger.info('trusted peer certificates: %d', len(peers))
         logger.info('screen %sx%s', self.screen_width, self.screen_height)
         logger.info('move into the edge facing a connected PC')
         async with link.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
@@ -423,20 +421,3 @@ class MouseServer:
         if hasattr(self, 'keyboard_listener'):
             self.keyboard_listener.stop()
         logger.info('server stopped')
-
-
-if __name__ == '__main__':
-    tls_dir = link.default_tls_dir()
-    link.ensure_identity(tls_dir)
-    logger.info('TLS certificate %s', tls_dir / 'cert.pem')
-    logger.info('fingerprint %s', link.fingerprint(tls_dir / 'cert.pem'))
-    server = MouseServer(tls_dir=tls_dir)
-    try:
-        asyncio.run(server.start())
-    except KeyboardInterrupt:
-        logger.info('server shutdown')
-    except ValueError as error:
-        logger.error('%s', error)
-        raise SystemExit(2)
-    finally:
-        server.stop()
