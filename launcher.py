@@ -122,10 +122,10 @@ def start_secondary():
     primary_ip = input("Primary PC IP address (or Enter for localhost): ").strip()
     
     if not primary_ip:
-        server_uri = "ws://localhost:8765"
+        server_uri = "wss://localhost:8765"
         print("   Using localhost for testing")
     else:
-        server_uri = f"ws://{primary_ip}:8765"
+        server_uri = f"wss://{primary_ip}:8765"
     
     print()
     print("📐 Physical Layout - Where is this PC relative to primary?")
@@ -192,7 +192,7 @@ def show_network_info():
     print(f"🌐 WebSocket Port: 8765")
     print()
     print("Connection URI for secondary PC:")
-    print(f"   ws://{get_local_ip()}:8765")
+    print(f"   wss://{get_local_ip()}:8765")
     print()
     print("📝 Setup Guide:")
     print("   1. Ensure both PCs are on the same network")

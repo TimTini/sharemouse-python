@@ -18,7 +18,8 @@ def get_screen_size():
 
 
 def place_cursor(x, y):
-    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+    if not ctypes.windll.user32.SetCursorPos(int(x), int(y)):
+        raise OSError('SetCursorPos failed')
 
 
 def normalize_position(x, y, screen_width, screen_height):

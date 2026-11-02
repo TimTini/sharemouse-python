@@ -7,7 +7,9 @@ from pathlib import Path
 import re
 import sys
 
-from configure import CONFIG_PATH, load_config, main as configure_main, probe_server, server_uri, show_config
+from configure import (
+    CONFIG_PATH, load_config, main as configure_main, probe_server, server_uri, show_config, tls_directory,
+)
 
 
 def check_dependencies():
@@ -34,13 +36,20 @@ def check_dependencies():
 
 
 async def run(config):
+    tls_dir = config.get('tls_dir')
     if config['role'] == 'server':
         from server import MouseServer
-        app = MouseServer(host=config['host'], port=config['port'])
+        kwargs = dict(host=config['host'], port=config['port'])
+        if tls_dir:
+            kwargs['tls_dir'] = tls_dir
+        app = MouseServer(**kwargs)
         operation = app.start
     else:
         from client import MouseClient
-        app = MouseClient(server_uri=server_uri(config), position=config['position'])
+        kwargs = dict(server_uri=server_uri(config), position=config['position'])
+        if tls_dir:
+            kwargs['tls_dir'] = tls_dir
+        app = MouseClient(**kwargs)
         operation = app.connect
     try:
         await operation()
@@ -71,7 +80,7 @@ def main(argv=None):
                     continue
                 if choice in ('1', '3'):
                     try:
-                        show_config(load_config(args.config))
+                        show_config(load_config(args.config), tls_directory(args.config))
                     except (OSError, ValueError) as error:
                         print(f'Cannot use saved configuration: {error}\nSelect 2 to configure this computer.')
                         continue
@@ -79,14 +88,19 @@ def main(argv=None):
                         config = load_config(args.config)
                         if config['role'] == 'server':
                             host = '127.0.0.1' if config['host'] == '0.0.0.0' else config['host']
-                            if asyncio.run(probe_server(host, config['port'])):
+                            if asyncio.run(probe_server(host, config['port'], tls_directory(args.config))):
                                 print('ShareMouse server is already running on this port. No duplicate started.')
                                 return 0
                         break
                 else:
                     print('Invalid selection.')
         config = load_config(args.config)
-        show_config(config)
+        if not args.check:
+            import link
+            tls_dir = tls_directory(args.config)
+            link.ensure_identity(tls_dir)
+            config['tls_dir'] = str(tls_dir)
+        show_config(config, tls_directory(args.config))
         if args.check:
             return 0
         print('Move the server mouse to the client-facing edge. Ctrl+C stops this process.')

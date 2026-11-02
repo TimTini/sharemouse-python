@@ -26,6 +26,7 @@ env/
 ENV/
 .venv
 /.cache/pip/
+/.cache/tests/
 
 # IDE
 .vscode/
@@ -38,9 +39,10 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Config
+# Config and this computer's TLS private key
 config.json
 config.json.tmp
+tls/
 backup/config-*.json
 /work/sharemouse-scripts-progress.md
 /work/sharemouse-core-task.patch

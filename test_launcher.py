@@ -18,30 +18,42 @@ import run_sharemouse
 async def check_discovery():
     import link
     from server import MouseServer
-    with patch('server.get_screen_size', return_value=(800, 600)):
-        app = MouseServer()
-    async with link.serve(app.handle_client, '127.0.0.1', 0) as listener:
-        port = listener.sockets[0].getsockname()[1]
-        found = await configure.discover_servers([ipaddress.ip_network('127.0.0.1/32')], port)
-        assert len(found) == 1 and found[0]['host'] == '127.0.0.1'
-        assert found[0]['machine'] and not app.clients and not app.control_active
-    assert await configure.probe_server('127.0.0.1', port) is None
-    with patch('configure.probe_server', new=AsyncMock()) as probe:
-        for networks in ([ipaddress.ip_network('192.168.0.0/24'), ipaddress.ip_network('192.168.1.0/24')],
-                         [ipaddress.ip_network('192.168.0.0/23')]):
-            try:
-                await configure.discover_servers(networks, port)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError('Oversized scan accepted')
-        probe.assert_not_called()
+    with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+        root = Path(folder)
+        server_tls, client_tls = root / 'server', root / 'client'
+        link.ensure_identity(server_tls)
+        link.ensure_identity(client_tls)
+        link.import_peer(server_tls, client_tls / 'cert.pem')
+        link.import_peer(client_tls, server_tls / 'cert.pem')
+        with patch('server.get_screen_size', return_value=(800, 600)):
+            app = MouseServer()
+        async with link.serve(app.handle_client, '127.0.0.1', 0, ssl=link.server_context(server_tls)) as listener:
+            port = listener.sockets[0].getsockname()[1]
+            found = await configure.discover_servers(
+                [ipaddress.ip_network('127.0.0.1/32')], port, client_tls)
+            assert len(found) == 1 and found[0]['host'] == '127.0.0.1'
+            assert found[0]['machine'] and not app.clients and not app.control_active
+        assert await configure.probe_server('127.0.0.1', port, client_tls) is None
+        with patch('configure.probe_server', new=AsyncMock()) as probe:
+            for networks in ([ipaddress.ip_network('192.168.0.0/24'), ipaddress.ip_network('192.168.1.0/24')],
+                             [ipaddress.ip_network('192.168.0.0/23')]):
+                try:
+                    await configure.discover_servers(networks, port)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError('Oversized scan accepted')
+            probe.assert_not_called()
 
-    async def unrelated(ws):
-        await ws.recv()
-        await ws.send(json.dumps({'type': 'other-service'}))
-    async with link.serve(unrelated, '127.0.0.1', 0) as listener:
-        assert await configure.probe_server('127.0.0.1', listener.sockets[0].getsockname()[1]) is None
+        async def unrelated(ws):
+            await ws.recv()
+            await ws.send(json.dumps({'type': 'other-service'}))
+        async with link.serve(unrelated, '127.0.0.1', 0, ssl=link.server_context(server_tls)) as listener:
+            assert await configure.probe_server(
+                '127.0.0.1', listener.sockets[0].getsockname()[1], client_tls) is None
+        async with link.serve(unrelated, '127.0.0.1', 0) as listener:
+            assert await configure.probe_server(
+                '127.0.0.1', listener.sockets[0].getsockname()[1], client_tls) is None
 
 
 def run():
@@ -50,7 +62,7 @@ def run():
     with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
         path = Path(folder) / 'config.json'
         with contextlib.redirect_stdout(io.StringIO()):
-            with patch('builtins.input', side_effect=['x', '1', '']):
+            with patch('builtins.input', side_effect=['x', '1', '', '']):
                 assert configure.main(['--config', str(path)]) == 0
             assert configure.load_config(path)['role'] == 'server'
             with patch('builtins.input', side_effect=['1']), \
@@ -61,12 +73,12 @@ def run():
             found = [{'host': '192.168.8.20', 'machine': 'SERVER-PC'}]
             with patch('configure.get_lan_networks', return_value=[ipaddress.ip_network('192.168.8.0/24')]), \
                     patch('configure.discover_servers', new=AsyncMock(return_value=found)), \
-                    patch('builtins.input', side_effect=['2', '', '1', '2']):
+                    patch('builtins.input', side_effect=['2', '', '', '1', '2']):
                 assert configure.main(['--config', str(path)]) == 0
             config = configure.load_config(path)
             assert config['host'] == '192.168.8.20' and config['position'] == 'left'
             with patch('configure.get_lan_networks', return_value=[]), \
-                    patch('builtins.input', side_effect=['2', '', '0', '192.168.8.99', '4']):
+                    patch('builtins.input', side_effect=['2', '', '', '0', '192.168.8.99', '4']):
                 assert configure.main(['--config', str(path)]) == 0
             assert configure.load_config(path)['position'] == 'bottom'
             with patch('builtins.input', side_effect=['0']):

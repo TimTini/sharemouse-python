@@ -37,14 +37,14 @@ def run():
             assert len(list((path.parent / 'backup').glob('config-*.json'))) == 1
             config = configure.load_config(path)
             assert config['position'] == 'left'
-            assert configure.server_uri(dict(config, host='::1')) == 'ws://[::1]:8765'
+            assert configure.server_uri(dict(config, host='::1')) == 'wss://[::1]:8765'
             assert run_sharemouse.main(['--config', str(path), '--check']) == 0
             from unittest.mock import AsyncMock
             client = Mock()
             client.connect = AsyncMock()
             with patch('client.MouseClient', return_value=client) as factory:
                 asyncio.run(run_sharemouse.run(config))
-                factory.assert_called_once_with(server_uri='ws://192.168.1.20:8765',
+                factory.assert_called_once_with(server_uri='wss://192.168.1.20:8765',
                                                 position='left')
                 client.stop.assert_called_once()
             assert configure.main(['--show', '--config', str(path)]) == 0

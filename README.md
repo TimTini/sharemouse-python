@@ -26,7 +26,7 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 | Keyboard Shortcuts | ✅ | ✅ |
 | Drag & Drop Files | ✅ | 🚧 Planned |
 | LAN server scan | ✅ | ✅ |
-| Encryption | ✅ | 🚧 Planned |
+| Encryption | ✅ | ✅ TLS between paired computers |
 | GUI Application | ✅ | 🚧 Planned |
 | Price | 💰 $24.95+ | ✅ Free |
 | Open Source | ❌ | ✅ |
@@ -46,7 +46,7 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 - Double-click **`configure.cmd`** on each PC. Select **1 (server)** on the PC
   with the physical mouse/keyboard, or **2 (client)** on the PC to control.
 - For a client, the script scans the preferred physical Windows LAN for running
-  ShareMouse servers. Select a numbered result or enter the server IP/hostname
+  ShareMouse servers. Select a numbered result or enter the server's local IP
   manually, then select the screen position with a number.
 - Double-click **`run_sharemouse.cmd`**, then select **1** to run. The same menu
   can reconfigure the PC or display saved settings. Keep its window open;
@@ -65,6 +65,7 @@ The LAN scan checks the selected TCP port and ShareMouse discovery response;
 it does not activate remote input. Automatic scanning is limited to one preferred
 physical IPv4 LAN with at most 256 addresses. Larger networks, blocked discovery
 and older servers can use manual IP entry. Discovery labels are not authentication.
+Pairing is the certificate in `tls/peers`.
 
 There is nothing to install with pip. `requirements.txt` lists no packages.
 
@@ -96,7 +97,10 @@ python run_sharemouse.py
 ```
 
 `--position` describes this client's screen relative to the server:
-`right`, `left`, `top`, or `bottom`. Use one client per edge. Run the server
+`right`, `left`, `top`, or `bottom`. Use one client per edge. Each computer
+gets `tls/cert.pem` and `tls/key.pem`. Copy only `cert.pem` into the other
+computer's `tls/peers` folder, in both directions, then start the programs.
+Leave `key.pem` where it was created. Run the server
 first, then the clients. Both sides need their runner open. Move the server
 pointer across the configured edge to control that client, and back through
 the facing edge to return. Ctrl+C stops the runner.
@@ -120,10 +124,12 @@ The server's live log identifies each connecting client by its self-reported
 machine name, remote address and edge; the configuration display shows saved
 settings, not a live inventory. Machine names are labels, not authentication.
 
-Functional limits: there is no clipboard/file transfer, monitor spanning or
-emergency return hotkey. Local input suppression is implemented for Windows;
-equivalent macOS behavior has not been verified. Connections use unencrypted,
-unauthenticated WebSockets, so use a trusted LAN. Client-held keys/buttons are
+Functional limits: there is no clipboard/file transfer or monitor spanning.
+Local input suppression is implemented for Windows;
+equivalent macOS behavior has not been verified. Connections use TLS.
+Each computer keeps its private key and trusts only certificates copied into
+`tls/peers`. Copy `tls/cert.pem` both ways, then restart. Use a trusted LAN as
+well. Client-held keys/buttons are
 released on return, disconnect and shutdown; this cannot recover after the
 client process is forcibly killed or the client machine crashes.
 
@@ -153,7 +159,7 @@ python server.py
 
 **Secondary PC (Controlled):**
 ```bash
-python client.py ws://192.168.1.100:8765 right
+python client.py wss://192.168.1.100:8765 right
 ```
 
 ### 3. Setup Layout
@@ -206,9 +212,9 @@ server = MouseServer(
 python client.py [SERVER_URI] [POSITION]
 
 # Examples
-python client.py ws://192.168.1.100:8765 right
-python client.py ws://192.168.1.100:8765 left
-python client.py ws://localhost:8765 top
+python client.py wss://192.168.1.100:8765 right
+python client.py wss://192.168.1.100:8765 left
+python client.py wss://localhost:8765 top
 ```
 
 ## 🔧 Advanced Usage
@@ -236,7 +242,7 @@ python server.py
 
 **Terminal 2:**
 ```bash
-python client.py ws://localhost:8765 right
+python client.py wss://localhost:8765 right
 ```
 
 ### Multiple Secondary PCs
@@ -250,12 +256,12 @@ python server.py
 
 **Secondary PC 1 (Right):**
 ```bash
-python client.py ws://192.168.1.100:8765 right
+python client.py wss://192.168.1.100:8765 right
 ```
 
 **Secondary PC 2 (Left):**
 ```bash
-python client.py ws://192.168.1.100:8765 left
+python client.py wss://192.168.1.100:8765 left
 ```
 
 ## 🐛 Troubleshooting
@@ -283,7 +289,34 @@ Grant Accessibility permissions:
 
 Coming back onto the primary takes a few pixels of movement past the shared edge, then the pointer is placed just inside that edge so it does not immediately leave again.
 
+Press **Ctrl+Alt+Esc on the server keyboard** to return immediately, even if the
+client cannot respond. Ordinary Esc still works in applications on the client.
+
+The client reports Windows display-off/suspend events, releases held input and
+becomes unavailable until its display/session resumes. The server probes each
+connected client every 0.5 seconds; a missing application response has a 2-second
+deadline, so a half-open connection normally returns control within about
+2.5 seconds. No screen or sleep setting is changed. Power events and timers
+still depend on the operating system scheduling the application.
+
+Update and restart **both** computers for heartbeat and batched motion support.
+Keep their existing `tls/` folders and pairing certificates. An old client
+without heartbeat replies is disconnected by the updated server.
+
 ### High Latency
+
+The server uses one ordered sender and batches adjacent motion at up to 240
+updates/second by default. The client replays each movement step for edge/clamp
+math, then updates the OS cursor once per batch; clicks, scroll and keys stay
+in order. This avoids a coroutine/TLS write and OS cursor placement for every
+mouse polling event without dropping intermediate edge crossings. It is a
+transport update target, not a guarantee of display FPS. The constructor's
+`move_hz` can be tuned between 30 and 1000; the default does not change mouse
+sensitivity.
+
+Run `python test_recovery.py` for fake-device burst, ordering, heartbeat,
+power-state, local rescue hotkey and stalled-upgrade regressions. These checks do not
+physically suspend a computer or measure perceived mouse smoothness.
 
 - Use wired LAN instead of WiFi
 - Close bandwidth-heavy applications
@@ -331,14 +364,13 @@ Unlike absolute positioning, we use delta (relative) movement:
 
 ## 🔐 Security Considerations
 
-⚠️ **Warning:** This application provides full mouse/keyboard control over connected PCs.
-
-For production use, consider:
-- Add authentication tokens
-- Use WSS (WebSocket Secure) with SSL/TLS
-- Implement IP whitelist
-- Encrypt transmitted data
-- Use VPN for remote connections
+This application provides full mouse and keyboard control over a paired PC.
+The link is TLS. `configure.py` creates `tls/cert.pem` and `tls/key.pem` on
+each computer. Copy only `cert.pem` into the other computer's `tls/peers`
+folder, then restart both programs. The fingerprint from `configure.py --show`
+identifies a certificate. A computer that was not paired cannot connect, and
+keystrokes are not readable on the network. The private key stays on the
+computer that created it.
 
 ## 🛣️ Roadmap
 
@@ -346,7 +378,7 @@ For production use, consider:
 
 - [ ] **Drag & Drop** - Transfer files by dragging
 - [x] **LAN server scan** - Choose a running server or enter its address manually
-- [ ] **Encryption** - Secure communication
+- [x] **Encryption** - TLS between paired computers
 - [ ] **GUI Application** - Native desktop app
 - [ ] **System Tray** - Background operation
 - [ ] **Hotkeys** - Quick enable/disable

@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 
@@ -60,41 +61,51 @@ def get_lan_networks():
     return sorted(networks)
 
 
-async def probe_server(host, port):
+async def probe_server(host, port, tls_dir=None):
     import link
+    directory = link.resolve_tls_dir(tls_dir)
     try:
-        async with link.connect(f'ws://{host}:{port}', open_timeout=0.8,
-                                 close_timeout=0.2, max_size=4096) as ws:
+        context = link.client_context(directory)
+        async with link.connect(f'wss://{host}:{port}', open_timeout=1.5,
+                                 close_timeout=0.2, max_size=4096, ssl=context) as ws:
             await ws.send(json.dumps({'type': 'discover'}))
             reply = json.loads(await asyncio.wait_for(ws.recv(), 0.8))
             if isinstance(reply, dict) and reply.get('type') == 'server_info' and reply.get('protocol') == 'sharemouse-python':
                 name = reply.get('machine')
                 if isinstance(name, str) and name:
                     return {'host': host, 'machine': ''.join(c if c.isprintable() else '?' for c in name)[:80]}
-    except (OSError, TimeoutError, ValueError, link.WebSocketException):
+    except (OSError, TimeoutError, ValueError, link.WebSocketException, ssl.SSLError):
         pass  # A closed port or another service is not a ShareMouse server.
     return None
 
 
-async def discover_servers(networks, port):
+async def discover_servers(networks, port, tls_dir=None):
+    import link
     if len(networks) != 1 or networks[0].num_addresses > 256:
         raise ValueError('Automatic scan requires one IPv4 LAN with at most 256 addresses. Enter the IP manually.')
+    directory = link.resolve_tls_dir(tls_dir)
+    if not link.has_identity(directory):
+        print('No TLS certificate on this computer. Run configure.py here first.')
+        return []
+    if not link.peer_certs(directory):
+        print("No paired certificate. Copy the server tls/cert.pem into this computer's tls/peers folder, then scan again.")
+        return []
     limit = asyncio.Semaphore(32)
 
     async def check(host):
         async with limit:
-            return await probe_server(str(host), port)
+            return await probe_server(str(host), port, directory)
 
     hosts = {host for network in networks if network.num_addresses <= 256 for host in network.hosts()}
     results = await asyncio.gather(*(check(host) for host in sorted(hosts)))
     return [result for result in results if result is not None]
 
 
-def choose_server(port):
+def choose_server(port, tls_dir):
     print(f'Scanning the preferred LAN for ShareMouse servers on TCP {port}...')
     try:
         networks = get_lan_networks()
-        found = asyncio.run(discover_servers(networks, port)) if networks else []
+        found = asyncio.run(discover_servers(networks, port, tls_dir)) if networks else []
     except (OSError, ValueError, subprocess.SubprocessError, ImportError) as error:
         print(f'Cannot scan automatically: {error}')
         found = []
@@ -102,11 +113,12 @@ def choose_server(port):
         print(f"  {index}. {server['machine']} - {server['host']}:{port}")
     if not found:
         print('No server found. Start the server first, or enter its IP manually.')
-    print('  0. Enter IP/hostname manually')
+        print('If it is already running, copy each tls/cert.pem into the other tls/peers folder and restart the server.')
+    print('  0. Enter local IP manually')
     while True:
-        choice = input('Select number or type server IP/hostname: ').strip()
+        choice = input('Select number or type server local IP: ').strip()
         if choice in ('', '0'):
-            return input('Server IP/hostname: ').strip()
+            return input('Server local IP: ').strip()
         if not choice.isdecimal():
             return choice
         if 1 <= int(choice) <= len(found):
@@ -155,10 +167,38 @@ def load_config(path=CONFIG_PATH):
 
 def server_uri(config):
     host = config['host']
-    return f"ws://{'[' + host + ']' if ':' in host else host}:{config['port']}"
+    return f"wss://{'[' + host + ']' if ':' in host else host}:{config['port']}"
 
 
-def show_config(config):
+def tls_directory(config_path):
+    return Path(config_path).resolve().parent / 'tls'
+
+
+def show_tls(tls_dir):
+    import link
+    directory = Path(tls_dir)
+    cert = directory / 'cert.pem'
+    if not cert.is_file():
+        print('No TLS certificate yet.')
+        return
+    print(f'TLS fingerprint: {link.fingerprint(cert)}')
+    print(f'Certificate file: {cert}')
+    print('Copy this cert.pem into the other computer tls/peers folder. Leave key.pem on this computer.')
+    print(f'Trusted peer certificates: {len(link.peer_certs(directory))}')
+
+
+def prompt_peer(tls_dir):
+    import link
+    entered = input('Path to the other computer tls/cert.pem (Enter to skip): ').strip().strip('"')
+    if not entered:
+        print('Skipped pairing. Copy the certificate into tls/peers later, then restart.')
+        return
+    dest = link.import_peer(tls_dir, entered)
+    print(f'Trusted peer certificate: {dest}')
+    print('Restart ShareMouse if it is already running.')
+
+
+def show_config(config, tls_dir=None):
     print(f"Machine: {config['machine']} | Role: {config['role'].upper()}")
     if config['role'] == 'server':
         print(f"Controls clients; listen: {config['host']}:{config['port']}")
@@ -170,6 +210,8 @@ def show_config(config):
         print('Connected client names/addresses appear in the running server log.')
     else:
         print(f"Controlled by server: {server_uri(config)} | Side: {config['position']}")
+    if tls_dir is not None:
+        show_tls(tls_dir)
     print('Saved configuration only; this does not confirm a running connection.')
 
 
@@ -178,15 +220,17 @@ def main(argv=None):
     parser.add_argument('--config', type=Path, default=CONFIG_PATH)
     parser.add_argument('--show', action='store_true', help='show saved local role')
     parser.add_argument('--role', choices=('server', 'client'))
-    parser.add_argument('--host', help='server bind address or client target IP/hostname')
+    parser.add_argument('--host', help='server bind address or client target local IP')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--position', choices=POSITIONS)
+    parser.add_argument('--peer-cert', type=Path, help='PEM certificate of the other computer')
     args = parser.parse_args(argv)
     try:
         if args.show:
-            show_config(load_config(args.config))
+            show_config(load_config(args.config), tls_directory(args.config))
             return 0
         role = args.role
+        menu = role is None
         if role is None:
             while True:
                 print('\n1. SERVER - use this PC mouse/keyboard\n2. CLIENT - control this PC from server\n3. Show saved configuration\n0. Exit')
@@ -195,7 +239,7 @@ def main(argv=None):
                     return 0
                 if choice == '3':
                     if args.config.exists():
-                        show_config(load_config(args.config))
+                        show_config(load_config(args.config), tls_directory(args.config))
                     else:
                         print('No saved configuration.')
                 elif choice in ('1', '2'):
@@ -204,9 +248,16 @@ def main(argv=None):
                     break
                 else:
                     print('Invalid selection.')
+        import link
+        tls_dir = tls_directory(args.config)
+        link.ensure_identity(tls_dir)
+        if args.peer_cert:
+            link.import_peer(tls_dir, args.peer_cert)
+        elif menu and role == 'client' and args.host is None:
+            prompt_peer(tls_dir)
         host = args.host
         if host is None:
-            host = '0.0.0.0' if role == 'server' else choose_server(args.port)
+            host = '0.0.0.0' if role == 'server' else choose_server(args.port, tls_dir)
         config = dict(version=1, machine=socket.gethostname(), role=role,
                       host=host, port=args.port)
         if role == 'client':
@@ -221,7 +272,9 @@ def main(argv=None):
         temporary.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
         temporary.replace(args.config)
         print(f'Saved: {args.config.resolve()}')
-        show_config(config)
+        show_config(config, tls_dir)
+        if menu and role == 'server' and not args.peer_cert:
+            prompt_peer(tls_dir)
         return 0
     except (OSError, ValueError, EOFError) as error:
         print(f'Configuration error: {error}', file=sys.stderr)
