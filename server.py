@@ -4,6 +4,7 @@ import ctypes
 import json
 import logging
 import platform
+import socket
 import threading
 
 from pynput import keyboard, mouse
@@ -207,8 +208,16 @@ class MouseServer:
                     data = json.loads(message)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(data, dict):
+                    continue
                 kind = data.get('type')
-                if kind == 'hello':
+                if kind == 'discover':
+                    await websocket.send(json.dumps({
+                        'type': 'server_info', 'protocol': 'sharemouse-python',
+                        'machine': socket.gethostname(),
+                    }))
+                    return
+                elif kind == 'hello':
                     pos = data.get('position')
                     if pos not in ('left', 'right', 'top', 'bottom'):
                         logger.warning('ignored client position %r', pos)

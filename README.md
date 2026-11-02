@@ -25,7 +25,7 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 | Special Keys (Ctrl/Alt/Cmd) | ✅ | ✅ |
 | Keyboard Shortcuts | ✅ | ✅ |
 | Drag & Drop Files | ✅ | 🚧 Planned |
-| Auto-discovery | ✅ | 🚧 Planned |
+| LAN server scan | ✅ | ✅ |
 | Encryption | ✅ | 🚧 Planned |
 | GUI Application | ✅ | 🚧 Planned |
 | Price | 💰 $24.95+ | ✅ Free |
@@ -40,6 +40,32 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies
+
+**Windows: double-click without typing commands**
+
+- Double-click **`configure.cmd`** on each PC. Select **1 (server)** on the PC
+  with the physical mouse/keyboard, or **2 (client)** on the PC to control.
+- For a client, the script scans the preferred physical Windows LAN for running
+  ShareMouse servers. Select a numbered result or enter the server IP/hostname
+  manually, then select the screen position with a number.
+- Double-click **`run_sharemouse.cmd`**, then select **1** to run. The same menu
+  can reconfigure the PC or display saved settings. Keep its window open;
+  Ctrl+C stops ShareMouse. Start the server before scanning from a client.
+
+The launchers use the local `.venv`. If it is missing, they use an installed
+Python 3.11+ to create it, and install the existing project requirements when
+dependencies are missing. First setup needs Internet. If Python is absent,
+the window displays the official download link; no global Python install or
+firewall change is performed automatically. Errors remain visible until a key
+is pressed. Do not copy a virtual environment from another PC; copy/download
+the source and let the launcher create one locally.
+
+The LAN scan checks the selected TCP port and ShareMouse discovery response;
+it does not activate remote input. Automatic scanning is limited to one preferred
+physical IPv4 LAN with at most 256 addresses. Larger networks, blocked discovery
+and older servers can use manual IP entry. Discovery labels are not authentication.
+
+**Manual installation / other platforms:**
 
 ```bash
 pip install -r requirements.txt
@@ -322,7 +348,7 @@ For production use, consider:
 ### Planned Features
 
 - [ ] **Drag & Drop** - Transfer files by dragging
-- [ ] **Auto-discovery** - Automatic PC detection on LAN
+- [x] **LAN server scan** - Choose a running server or enter its address manually
 - [ ] **Encryption** - Secure communication
 - [ ] **GUI Application** - Native desktop app
 - [ ] **System Tray** - Background operation
@@ -335,7 +361,7 @@ For production use, consider:
 - [ ] Better error handling
 - [ ] Connection quality indicator
 - [ ] Latency measurement display
-- [ ] Configuration file support
+- [x] Configuration file support
 - [ ] Logging system
 - [ ] Performance optimizations
 
