@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 from unittest.mock import AsyncMock, Mock, patch
 
+from tests import ROOT
+
 import configure
 import run_sharemouse
 
@@ -96,8 +98,8 @@ def run():
         assert configure.get_lan_networks() == [ipaddress.ip_network('192.168.8.0/24')]
     asyncio.run(check_discovery())
     # Exercise actual CMD entrypoints without changing config or starting hooks.
-    if __import__('sys').platform == 'win32' and Path(__file__).with_name('.venv').exists():
-        root = Path(__file__).resolve().parent
+    if __import__('sys').platform == 'win32' and (ROOT / '.venv').exists():
+        root = ROOT
         with tempfile.TemporaryDirectory(prefix='launcher space ', dir=root) as folder:
             target = Path(folder)
             assert target.resolve().is_relative_to(root)
@@ -106,8 +108,12 @@ def run():
             shutil.copy2(root / '.venv/Scripts/python.exe', scripts / 'python.exe')
             shutil.copy2(root / '.venv/pyvenv.cfg', target / '.venv/pyvenv.cfg')
             for name in ('configure.cmd', 'run_sharemouse.cmd', 'configure.py', 'run_sharemouse.py',
-                         'requirements.txt', 'link.py'):
+                         'requirements.txt', 'link.py', 'test.cmd'):
                 shutil.copy2(root / name, target / name)
+            # A sentinel package proves CMD dispatch without recursively running this suite.
+            (target / 'tests').mkdir()
+            (target / 'tests/__init__.py').write_text('', encoding='utf-8')
+            (target / 'tests/__main__.py').write_text("print('CMD_TEST_DISPATCH_OK')\n", encoding='utf-8')
             env = dict(os.environ, PYTHONPATH=str(root / '.venv/Lib/site-packages'))
             assert run_sharemouse.check_dependencies() == 0, 'Prepare dependencies before running CMD checks; tests do not install them'
             for cwd in (target,):
@@ -116,6 +122,10 @@ def run():
                                             input='0\n\n', capture_output=True, text=True, env=env,
                                             encoding='utf-8', errors='replace', timeout=30)
                     assert result.returncode == 0, result.stdout + result.stderr
+                result = subprocess.run(['cmd.exe', '/d', '/c', 'test.cmd'], cwd=cwd,
+                                        input='\n', capture_output=True, text=True, env=env,
+                                        encoding='utf-8', errors='replace', timeout=30)
+                assert result.returncode == 0 and 'CMD_TEST_DISPATCH_OK' in result.stdout, result.stdout + result.stderr
     print('launcher menus, CMD and discovery: ok')
 
 

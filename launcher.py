@@ -175,8 +175,7 @@ def test_setup():
     print("Running Setup Tests...")
     print()
     
-    test_path = os.path.join(SCRIPT_DIR, 'test_setup.py')
-    subprocess.run([sys.executable, test_path], cwd=SCRIPT_DIR)
+    subprocess.run([sys.executable, '-m', 'tests.test_setup'], cwd=SCRIPT_DIR)
     
     print()
     input("Press Enter to return to menu...")

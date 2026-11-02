@@ -24,6 +24,8 @@ goto failed
 :launch
 if "%~1"=="--configure" (
   ".venv\Scripts\python.exe" configure.py
+) else if "%~1"=="--test" (
+  ".venv\Scripts\python.exe" -m tests
 ) else (
   ".venv\Scripts\python.exe" run_sharemouse.py --interactive
 )

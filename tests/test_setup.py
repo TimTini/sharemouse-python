@@ -51,7 +51,7 @@ def test_utils():
     """Test edge handoff and key encoding."""
     print("\nTesting utility functions...")
     try:
-        import test_logic
+        from tests import test_logic
         test_logic.run()
         print("✓ Edge handoff and key encoding")
         return True

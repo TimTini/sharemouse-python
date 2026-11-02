@@ -7,9 +7,11 @@ from pathlib import Path
 import tempfile
 from unittest.mock import Mock, patch
 
+from tests import ROOT
+
 
 def run():
-    assert Path(__file__).with_name('configure.py').is_file(), 'Missing configuration script'
+    assert (ROOT / 'configure.py').is_file(), 'Missing configuration script'
     import configure
     import run_sharemouse
 

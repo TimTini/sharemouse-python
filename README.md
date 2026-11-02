@@ -113,7 +113,7 @@ python run_sharemouse.py --check
 ```
 
 `--check` validates configuration only; it does not verify dependencies,
-firewall or a working connection. Run `python test_setup.py` to check the
+firewall or a working connection. Run `python -m tests.test_setup` to check the
 local installation. Running `python configure.py` without arguments prompts
 for role and endpoint. Configuration is saved to ignored `config.json` beside
 the scripts; existing configuration is copied into `backup/` before replacement.
@@ -133,8 +133,21 @@ well. Client-held keys/buttons are
 released on return, disconnect and shutdown; this cannot recover after the
 client process is forcibly killed or the client machine crashes.
 
-Offline regression commands: `python test_scripts.py`,
-`python test_input_cleanup.py`, `python test_logic.py`, `python test_setup.py`.
+Double-click **`test.cmd`** to run the regression suite without typing commands.
+Developer entrypoint: `python -m tests`. Add `--hardware` to also read actual
+screen dimensions and pointer position, or run `python -m tests.test_setup`.
+Tests use fake input controllers and loopback connections; they do not move the
+physical cursor, change resolution, or put a computer to sleep. Full results
+stay in ignored `.cache/tests/results.log`.
+
+The resolution suite covers 640×480, 1366×768, 1920×1080, 2560×1440,
+3840×2160, 5120×2880, portrait 1080×1920 and ultrawide 3440×1440:
+64 ordered server/client pairs across all four edges, 1,536 boundary/round-trip
+geometry checks, 256 real-handler round trips with fake devices, and three
+mixed four-client layouts (24 transfers). It checks normalized entry/return,
+unscaled relative movement, batching/clamping, no immediate re-entry and
+isolation of clicks/scroll/movement to the selected client. These are simulated
+resolution tests, not physical multi-monitor or per-monitor DPI validation.
 Before relying on a pair of PCs, verify movement and return across the shared
 edge, left/right click, drag, scroll, typing, modifier shortcuts and disconnect
 while holding a key. These physical two-computer checks have not been run here.
@@ -181,14 +194,24 @@ Configure the physical position of your secondary PC relative to primary:
 
 ```
 sharemouse-py/
+├── configure.cmd          # Double-click configuration
+├── run_sharemouse.cmd     # Double-click runner / shared Python bootstrap
+├── test.cmd               # Double-click regression suite
+├── configure.py           # Configuration and LAN scan
+├── run_sharemouse.py       # Saved-role runner
 ├── server.py              # Controller - primary PC
 ├── client.py              # Controlled - secondary PC
-├── utils.py               # Shared utilities
-├── launcher.py            # Interactive launcher
-├── test_setup.py          # Installation verification
-├── requirements.txt       # Python dependencies
-├── README.md              # This file
-└── .gitignore            # Git ignore rules
+├── devices.py             # Windows input
+├── power.py               # Windows power notifications
+├── link.py                # LAN WebSocket/TLS transport
+├── utils.py               # Handoff geometry and key encoding
+├── launcher.py            # Legacy interactive launcher
+├── tests/                 # All regression checks and setup smoke
+│   ├── __main__.py         # Suite runner
+│   ├── test_resolutions.py # Resolution matrix / mixed clients
+│   └── test_*.py           # Input, recovery, config, CMD, TLS, setup
+├── requirements.txt
+└── README.md
 ```
 
 ## ⚙️ Configuration
@@ -314,7 +337,7 @@ transport update target, not a guarantee of display FPS. The constructor's
 `move_hz` can be tuned between 30 and 1000; the default does not change mouse
 sensitivity.
 
-Run `python test_recovery.py` for fake-device burst, ordering, heartbeat,
+Run `python -m tests.test_recovery` for fake-device burst, ordering, heartbeat,
 power-state, local rescue hotkey and stalled-upgrade regressions. These checks do not
 physically suspend a computer or measure perceived mouse smoothness.
 
