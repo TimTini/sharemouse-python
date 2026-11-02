@@ -12,16 +12,24 @@ from configure import CONFIG_PATH, load_config, main as configure_main, probe_se
 
 def check_dependencies():
     try:
-        for line in Path(__file__).with_name('requirements.txt').read_text().splitlines():
-            name, minimum = line.strip().split('>=')
+        lines = Path(__file__).with_name('requirements.txt').read_text(encoding='utf-8').splitlines()
+    except OSError as error:
+        print(f'Dependency check failed: {error}', file=sys.stderr)
+        return 1
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        try:
+            name, minimum = line.split('>=')
             installed = importlib.metadata.version(name)
             version = tuple(map(int, re.match(r'\d+(?:\.\d+)*', installed).group().split('.')))
             if version < tuple(map(int, minimum.split('.'))):
                 raise ImportError(f'{name} {installed} is older than required {minimum}')
             importlib.import_module(name)
-    except (OSError, ImportError, ValueError, AttributeError) as error:
-        print(f'Dependency check failed: {error}', file=sys.stderr)
-        return 1
+        except (ImportError, ValueError, AttributeError) as error:
+            print(f'Dependency check failed: {error}', file=sys.stderr)
+            return 1
     return 0
 
 

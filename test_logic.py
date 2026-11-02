@@ -1,5 +1,5 @@
 """Pure checks for edge handoff and key encoding. No display, no network."""
-from pynput.keyboard import Key, KeyCode
+from devices import Key, KeyCode
 
 from utils import (
     EDGE_THRESHOLD,

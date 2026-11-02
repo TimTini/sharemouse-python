@@ -29,17 +29,17 @@ def print_banner():
 
 
 def get_local_ip():
-    """Get local IP address"""
-    import socket
+    """First private IPv4 from the local stack. Does not contact the internet."""
     try:
-        # Create a socket to get local IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "Unable to detect"
+        from configure import local_ipv4_addresses
+        import ipaddress
+        for text in local_ipv4_addresses():
+            ip = ipaddress.ip_address(text)
+            if ip.is_private and not ip.is_loopback:
+                return text
+    except (OSError, ImportError, ValueError):
+        pass
+    return "Unable to detect"
 
 
 def main_menu():

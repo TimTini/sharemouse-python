@@ -5,9 +5,8 @@ import logging
 import socket
 import sys
 
-from pynput import keyboard, mouse
-from pynput.mouse import Button
-import websockets
+import link
+from devices import Button, KeyController, MouseController
 
 from utils import decode_key, entry_point, get_screen_size, step_position
 
@@ -31,8 +30,8 @@ class MouseClient:
         self.websocket = None
         self.x = 0
         self.y = 0
-        self.mouse = mouse.Controller()
-        self.keys = keyboard.Controller()
+        self.mouse = MouseController()
+        self.keys = KeyController()
         self.pressed_keys = set()
         self.pressed_buttons = set()
 
@@ -61,7 +60,7 @@ class MouseClient:
         while self.running:
             try:
                 logger.info('connecting to %s', self.server_uri)
-                async with websockets.connect(self.server_uri) as websocket:
+                async with link.connect(self.server_uri) as websocket:
                     self.websocket = websocket
                     await websocket.send(json.dumps({
                         'type': 'hello',
@@ -72,7 +71,7 @@ class MouseClient:
                     retry = 1
                     async for message in websocket:
                         await self.handle_message(message)
-            except websockets.exceptions.ConnectionClosed:
+            except link.ConnectionClosed:
                 logger.warning('connection closed')
             except Exception as e:
                 logger.error('connection error: %s', e)

@@ -6,7 +6,6 @@ import ipaddress
 import json
 from pathlib import Path
 import platform
-import re
 import shutil
 import socket
 import subprocess
@@ -14,6 +13,30 @@ import sys
 
 CONFIG_PATH = Path(__file__).resolve().with_name('config.json')
 POSITIONS = ('right', 'left', 'top', 'bottom')
+
+
+def local_ipv4_addresses():
+    """IPv4 addresses from the local stack. Does not resolve names."""
+    if platform.system() != 'Windows':
+        return []
+    command = "(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.AddressState -eq 'Preferred' }).IPAddress"
+    try:
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', command],
+                                check=False, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for line in (result.stdout or '').splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            ip = ipaddress.ip_address(text)
+        except ValueError:
+            continue
+        if ip.version == 4:
+            found.append(str(ip))
+    return sorted(set(found))
 
 
 def get_lan_networks():
@@ -38,17 +61,17 @@ def get_lan_networks():
 
 
 async def probe_server(host, port):
-    import websockets
+    import link
     try:
-        async with websockets.connect(f'ws://{host}:{port}', open_timeout=0.8,
-                                      close_timeout=0.2, max_size=4096) as ws:
+        async with link.connect(f'ws://{host}:{port}', open_timeout=0.8,
+                                 close_timeout=0.2, max_size=4096) as ws:
             await ws.send(json.dumps({'type': 'discover'}))
             reply = json.loads(await asyncio.wait_for(ws.recv(), 0.8))
             if isinstance(reply, dict) and reply.get('type') == 'server_info' and reply.get('protocol') == 'sharemouse-python':
                 name = reply.get('machine')
                 if isinstance(name, str) and name:
                     return {'host': host, 'machine': ''.join(c if c.isprintable() else '?' for c in name)[:80]}
-    except (OSError, TimeoutError, ValueError, websockets.exceptions.WebSocketException):
+    except (OSError, TimeoutError, ValueError, link.WebSocketException):
         pass  # A closed port or another service is not a ShareMouse server.
     return None
 
@@ -111,15 +134,11 @@ def validate_config(config):
         raise ValueError('Role must be server or client.')
     host = config.get('host')
     if not isinstance(host, str) or not host:
-        raise ValueError('Enter a server IP address or hostname.')
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        if len(host) > 253 or not all(
-            re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label)
-            for label in host.rstrip('.').split('.')
-        ):
-            raise ValueError('Host must be an IP address or hostname, without ws:// or port.')
+        raise ValueError('Enter a local IP address.')
+    import link
+    allowed = host in ('0.0.0.0', '::') if config['role'] == 'server' else host.lower() == 'localhost'
+    if not allowed and not link.is_local_ip(host):
+        raise ValueError('Host must be a local IP address, not a public address or hostname.')
     if config['role'] == 'client' and host in ('0.0.0.0', '::'):
         raise ValueError('Client needs the actual server IP, not a wildcard address.')
     port = config.get('port')
@@ -143,12 +162,11 @@ def show_config(config):
     print(f"Machine: {config['machine']} | Role: {config['role'].upper()}")
     if config['role'] == 'server':
         print(f"Controls clients; listen: {config['host']}:{config['port']}")
-        try:
-            addresses = sorted({info[4][0] for info in socket.getaddrinfo(
-                socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM)})
+        addresses = local_ipv4_addresses()
+        if addresses:
             print('Local IPv4 candidates (choose the LAN adapter): ' + ', '.join(addresses))
-        except OSError:
-            print('Cannot list local IPv4 addresses; use ipconfig (Windows) or ifconfig.')
+        else:
+            print('Cannot list local IPv4 addresses; use ipconfig.')
         print('Connected client names/addresses appear in the running server log.')
     else:
         print(f"Controlled by server: {server_uri(config)} | Side: {config['position']}")

@@ -3,7 +3,6 @@ setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
-set "PIP_CACHE_DIR=%~dp0.cache\pip"
 if exist ".venv\Scripts\python.exe" goto ready
 py -3 -c "import sys; sys.exit(sys.version_info < (3,11))" >nul 2>nul
 if not errorlevel 1 (
@@ -20,11 +19,8 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto missing_python
 ".venv\Scripts\python.exe" run_sharemouse.py --check-dependencies
 if not errorlevel 1 goto launch
-echo Installing project dependencies into .venv. Internet is required for first setup.
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
-if errorlevel 1 goto failed
-".venv\Scripts\python.exe" run_sharemouse.py --check-dependencies
-if errorlevel 1 goto failed
+echo This program does not download packages or connect to the internet.
+goto failed
 :launch
 if "%~1"=="--configure" (
   ".venv\Scripts\python.exe" configure.py

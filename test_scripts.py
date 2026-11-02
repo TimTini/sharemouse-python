@@ -48,9 +48,10 @@ def run():
                                                 position='left')
                 client.stop.assert_called_once()
             assert configure.main(['--show', '--config', str(path)]) == 0
-            with patch('configure.socket.getaddrinfo', side_effect=OSError('offline')):
+            with patch('configure.local_ipv4_addresses', return_value=[]):
                 configure.show_config(dict(config, role='server'))
-            for host in ('', 'ws://bad', 'host/path', 'user@host', 'bad host'):
+            for host in ('', 'ws://bad', 'host/path', 'user@host', 'bad host',
+                         '8.8.8.8', 'example.com'):
                 invalid = dict(config, host=host)
                 try:
                     configure.validate_config(invalid)

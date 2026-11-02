@@ -1,37 +1,24 @@
 """Edge handoff math shared by the primary and secondary PCs."""
 import ctypes
-import platform
 
-from pynput.keyboard import Key, KeyCode
+from devices import Key, KeyCode
 
 EDGE_THRESHOLD = 5
 POSITIONS = ('left', 'right', 'top', 'bottom')
 
 
 def get_screen_size():
-    system = platform.system()
-    if system == 'Windows':
-        user32 = ctypes.windll.user32
-        # A scaled display would otherwise report fewer pixels than the pointer uses.
-        try:
-            user32.SetProcessDPIAware()
-        except AttributeError:
-            pass
-        return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    if system == 'Darwin':
-        import Quartz
-        display = Quartz.CGMainDisplayID()
-        return Quartz.CGDisplayPixelsWide(display), Quartz.CGDisplayPixelsHigh(display)
-    raise OSError('Screen size is implemented for Windows and macOS only.')
+    user32 = ctypes.windll.user32
+    # A scaled display would otherwise report fewer pixels than the pointer uses.
+    try:
+        user32.SetProcessDPIAware()
+    except AttributeError:
+        pass
+    return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
 
 
 def place_cursor(x, y):
-    x, y = int(x), int(y)
-    if platform.system() == 'Windows':
-        ctypes.windll.user32.SetCursorPos(x, y)
-        return
-    from pynput.mouse import Controller
-    Controller().position = (x, y)
+    ctypes.windll.user32.SetCursorPos(int(x), int(y))
 
 
 def normalize_position(x, y, screen_width, screen_height):

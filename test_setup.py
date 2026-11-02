@@ -8,17 +8,12 @@ def test_imports():
     print("Testing imports...")
     
     try:
-        import pynput
-        print("✓ pynput imported successfully")
+        import devices
+        import link
+        print("✓ local input and link modules imported")
+        del devices, link
     except ImportError as e:
-        print(f"✗ Failed to import pynput: {e}")
-        return False
-    
-    try:
-        import websockets
-        print("✓ websockets imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import websockets: {e}")
+        print(f"✗ Failed to import local modules: {e}")
         return False
     
     return True
@@ -43,8 +38,8 @@ def test_mouse_control():
     print("\nTesting mouse control...")
     
     try:
-        from pynput.mouse import Controller
-        print(f"✓ Current mouse position: {Controller().position}")
+        from devices import MouseController
+        print(f"✓ Current mouse position: {MouseController().position}")
         print("✓ Mouse control available")
         return True
     except Exception as e:
@@ -99,8 +94,7 @@ def main():
         return 0
     else:
         print(f"✗ Some tests failed ({passed}/{total} passed)")
-        print("\nPlease install missing dependencies:")
-        print("pip install -r requirements.txt")
+        print("\nLocal modules failed to import. Nothing is downloaded.")
         return 1
 
 

@@ -3,9 +3,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
-from pynput._util.win32 import SystemHook
-from pynput.keyboard import Key
-from pynput.mouse import Button
+from devices import Button, Key, Swallow
 
 from client import MouseClient
 from server import MouseServer
@@ -13,7 +11,7 @@ from server import MouseServer
 
 async def check():
     with patch('client.get_screen_size', return_value=(800, 600)), \
-            patch('client.mouse.Controller'), patch('client.keyboard.Controller'):
+            patch('client.MouseController'), patch('client.KeyController'):
         app = MouseClient()
     app.control_active = True
     app.websocket = Mock()
@@ -53,7 +51,7 @@ async def check():
             yield json.dumps({'type': 'click', 'button': 'middle', 'pressed': True})
             app.running = False
 
-    with patch('client.websockets.connect', return_value=Connection()):
+    with patch('client.link.connect', return_value=Connection()):
         await app.connect()
     assert app.keys.release.call_args.args == (Key.alt_l,)
     assert app.mouse.release.call_args.args == (Button.middle,)
@@ -66,7 +64,7 @@ async def check():
             raise asyncio.CancelledError()
 
     releases = app.keys.release.call_count
-    with patch('client.websockets.connect', return_value=CancelledConnection()):
+    with patch('client.link.connect', return_value=CancelledConnection()):
         try:
             await app.connect()
         except asyncio.CancelledError:
@@ -104,13 +102,13 @@ async def check():
     server.running = True
     server.control_active = True
     server.mouse_listener = Mock()
-    server.mouse_listener.suppress_event.side_effect = SystemHook.SuppressException
+    server.mouse_listener.suppress_event.side_effect = Swallow
     emitted = []
     server._emit = emitted.append
     server._place = Mock()
     try:
         server.on_move(10, 100)
-    except SystemHook.SuppressException:
+    except Swallow:
         pass
     else:
         raise AssertionError('captured move was not swallowed')

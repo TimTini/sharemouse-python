@@ -16,11 +16,11 @@ import run_sharemouse
 
 
 async def check_discovery():
-    import websockets
+    import link
     from server import MouseServer
     with patch('server.get_screen_size', return_value=(800, 600)):
         app = MouseServer()
-    async with websockets.serve(app.handle_client, '127.0.0.1', 0) as listener:
+    async with link.serve(app.handle_client, '127.0.0.1', 0) as listener:
         port = listener.sockets[0].getsockname()[1]
         found = await configure.discover_servers([ipaddress.ip_network('127.0.0.1/32')], port)
         assert len(found) == 1 and found[0]['host'] == '127.0.0.1'
@@ -40,15 +40,13 @@ async def check_discovery():
     async def unrelated(ws):
         await ws.recv()
         await ws.send(json.dumps({'type': 'other-service'}))
-    async with websockets.serve(unrelated, '127.0.0.1', 0) as listener:
+    async with link.serve(unrelated, '127.0.0.1', 0) as listener:
         assert await configure.probe_server('127.0.0.1', listener.sockets[0].getsockname()[1]) is None
 
 
 def run():
     assert hasattr(configure, 'discover_servers'), 'LAN discovery is missing'
-    with patch('run_sharemouse.importlib.metadata.version', return_value='0.0'), \
-            contextlib.redirect_stderr(io.StringIO()):
-        assert run_sharemouse.check_dependencies() == 1
+    assert run_sharemouse.check_dependencies() == 0
     with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
         path = Path(folder) / 'config.json'
         with contextlib.redirect_stdout(io.StringIO()):
@@ -95,7 +93,8 @@ def run():
             scripts.mkdir(parents=True)
             shutil.copy2(root / '.venv/Scripts/python.exe', scripts / 'python.exe')
             shutil.copy2(root / '.venv/pyvenv.cfg', target / '.venv/pyvenv.cfg')
-            for name in ('configure.cmd', 'run_sharemouse.cmd', 'configure.py', 'run_sharemouse.py', 'requirements.txt'):
+            for name in ('configure.cmd', 'run_sharemouse.cmd', 'configure.py', 'run_sharemouse.py',
+                         'requirements.txt', 'link.py'):
                 shutil.copy2(root / name, target / name)
             env = dict(os.environ, PYTHONPATH=str(root / '.venv/Lib/site-packages'))
             assert run_sharemouse.check_dependencies() == 0, 'Prepare dependencies before running CMD checks; tests do not install them'

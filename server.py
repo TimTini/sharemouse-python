@@ -7,8 +7,8 @@ import platform
 import socket
 import threading
 
-from pynput import keyboard, mouse
-import websockets
+import link
+from devices import KeyListener, MouseListener
 
 from utils import (
     encode_key,
@@ -176,35 +176,21 @@ class MouseServer:
         if encoded is not None:
             self._emit({'type': kind, 'key': encoded})
 
-    def _keyboard_filter(self, msg, data):
-        listener = self.keyboard_listener
-        mask = (
-            listener._KBDLLHOOKSTRUCT.LLKHF_INJECTED
-            | listener._KBDLLHOOKSTRUCT.LLKHF_LOWER_IL_INJECTED
-        )
-        if data.flags & mask or not self.control_active:
-            return True
+    def _on_key(self, pressed, key, injected):
+        if injected or not self.control_active:
+            return
         try:
-            if msg in listener._PRESS_MESSAGES or msg in listener._RELEASE_MESSAGES:
-                try:
-                    key = listener._event_to_key(msg, data.vkCode)
-                except Exception:
-                    key = None
-                if key is not None:
-                    kind = 'key_press' if msg in listener._PRESS_MESSAGES else 'key_release'
-                    self._emit_key(kind, key)
+            if key is not None:
+                kind = 'key_press' if pressed else 'key_release'
+                self._emit_key(kind, key)
         finally:
-            listener.suppress_event()
+            self.keyboard_listener.suppress_event()
 
     def on_press(self, key, injected=False):
-        if platform.system() == 'Windows' or injected or not self.control_active:
-            return
-        self._emit_key('key_press', key)
+        self._on_key(True, key, injected)
 
     def on_release(self, key, injected=False):
-        if platform.system() == 'Windows' or injected or not self.control_active:
-            return
-        self._emit_key('key_release', key)
+        self._on_key(False, key, injected)
 
     async def handle_client(self, websocket):
         try:
@@ -250,7 +236,7 @@ class MouseServer:
                         )
                     if owns:
                         self._end_control(data.get('exit_x', 0.5), data.get('exit_y', 0.5))
-        except websockets.exceptions.ConnectionClosed:
+        except link.ConnectionClosed:
             pass
         finally:
             with self._lock:
@@ -266,22 +252,21 @@ class MouseServer:
     async def start(self):
         self.running = True
         self.loop = asyncio.get_running_loop()
-        self.mouse_listener = mouse.Listener(
+        self.mouse_listener = MouseListener(
             on_move=self.on_move,
             on_click=self.on_click,
             on_scroll=self.on_scroll,
         )
-        self.keyboard_listener = keyboard.Listener(
+        self.keyboard_listener = KeyListener(
             on_press=self.on_press,
             on_release=self.on_release,
-            win32_event_filter=self._keyboard_filter,
         )
         self.mouse_listener.start()
         self.keyboard_listener.start()
         logger.info('listening on %s:%s', self.host, self.port)
         logger.info('screen %sx%s', self.screen_width, self.screen_height)
         logger.info('move into the edge facing a connected PC')
-        async with websockets.serve(self.handle_client, self.host, self.port):
+        async with link.serve(self.handle_client, self.host, self.port):
             await asyncio.Future()
 
     def stop(self):

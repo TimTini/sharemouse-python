@@ -53,23 +53,20 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
   Ctrl+C stops ShareMouse. Start the server before scanning from a client.
 
 The launchers use the local `.venv`. If it is missing, they use an installed
-Python 3.11+ to create it, and install the existing project requirements when
-dependencies are missing. First setup needs Internet. If Python is absent,
-the window displays the official download link; no global Python install or
-firewall change is performed automatically. Errors remain visible until a key
-is pressed. Do not copy a virtual environment from another PC; copy/download
-the source and let the launcher create one locally.
+Python 3.11+ to create it. No packages are downloaded. The program only
+connects to loopback, link-local, and private LAN addresses. If Python is
+absent, the window displays the official download link; it does not open that
+page, and no global Python install or firewall change is performed
+automatically. Errors remain visible until a key is pressed. Do not copy a
+virtual environment from another PC; copy the source and let the launcher
+create one locally.
 
 The LAN scan checks the selected TCP port and ShareMouse discovery response;
 it does not activate remote input. Automatic scanning is limited to one preferred
 physical IPv4 LAN with at most 256 addresses. Larger networks, blocked discovery
 and older servers can use manual IP entry. Discovery labels are not authentication.
 
-**Manual installation / other platforms:**
-
-```bash
-pip install -r requirements.txt
-```
+There is nothing to install with pip. `requirements.txt` lists no packages.
 
 ### 2. Launch Application
 

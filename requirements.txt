@@ -1,2 +1,1 @@
-pynput>=1.7.6
-websockets>=12.0
+# No third-party packages. Input and the LAN link are local modules.
