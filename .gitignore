@@ -39,6 +39,11 @@ Thumbs.db
 
 # Config
 config.json
+config.json.tmp
+backup/config-*.json
+/work/sharemouse-scripts-progress.md
+/work/sharemouse-core-task.patch
+/work/github-publish-*
 *.log
 
 # Testing

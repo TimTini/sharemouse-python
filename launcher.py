@@ -179,7 +179,7 @@ def test_setup():
     subprocess.run([sys.executable, test_path], cwd=SCRIPT_DIR)
     
     print()
-    input("Tekan Enter untuk kembali ke menu...")
+    input("Press Enter to return to menu...")
 
 
 def show_network_info():

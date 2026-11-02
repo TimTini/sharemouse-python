@@ -1,391 +1,283 @@
-"""
-Mouse Sync Server - Broadcast cursor position and mouse events
-Runs on source PC to track and send mouse/keyboard events to target PC(s)
-"""
+"""Primary PC. Watches the pointer and hands it to a peer across a screen edge."""
 import asyncio
+import ctypes
 import json
 import logging
-from pynput import mouse, keyboard
-from pynput.mouse import Button
+import platform
+import threading
+
+from pynput import keyboard, mouse
 import websockets
-import pyautogui
-from utils import normalize_position, get_screen_size, get_mouse_sensitivity, get_mouse_acceleration, get_clipboard
+
+from utils import (
+    encode_key,
+    get_screen_size,
+    hit_edge,
+    normalize_position,
+    place_cursor,
+    return_point,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 class MouseServer:
-    def __init__(self, host='0.0.0.0', port=8765, edge_trigger='right', edge_threshold=5):
+    def __init__(self, host='0.0.0.0', port=8765, edge_threshold=5):
         self.host = host
         self.port = port
-        self.clients = set()
+        self.edge_threshold = edge_threshold
         self.screen_width, self.screen_height = get_screen_size()
+        self.clients = {}
         self.running = False
-        self.edge_trigger = edge_trigger  # 'right', 'left', 'top', 'bottom'
-        self.edge_threshold = edge_threshold  # pixels from edge to trigger
-        self.control_active = False  # Track if client control is active
-        self.last_x = 0
-        self.last_y = 0
-        self.entry_x = 0  # X position when entering client
-        self.entry_y = 0  # Y position when entering client
-        
-        # Mouse sensitivity settings
-        self.mouse_sensitivity = get_mouse_sensitivity()
-        self.mouse_acceleration = get_mouse_acceleration()
-        logger.info(f"Mouse sensitivity: {self.mouse_sensitivity:.2f}")
-        logger.info(f"Mouse acceleration: {'Enabled' if self.mouse_acceleration else 'Disabled'}")
-        
-        # Clipboard monitoring
-        self.last_clipboard = ""
-        self.clipboard_enabled = True
-        
-    async def register(self, websocket):
-        """Register new client connection"""
-        self.clients.add(websocket)
-        logger.info(f"Client connected. Total clients: {len(self.clients)}")
-        
-    async def unregister(self, websocket):
-        """Unregister client connection"""
-        self.clients.discard(websocket)
-        logger.info(f"Client disconnected. Total clients: {len(self.clients)}")
-        
-    async def broadcast(self, message):
-        """Send message to all connected clients"""
-        if self.clients:
+        self.control_active = False
+        self.active_edge = None
+        self.loop = None
+        self._lock = threading.Lock()
+        self._placing = False
+        self._cursor_hidden = False
+        self.park_x = self.screen_width // 2
+        self.park_y = self.screen_height // 2
+
+    async def _send(self, targets, message):
+        if targets:
             await asyncio.gather(
-                *[client.send(message) for client in self.clients],
-                return_exceptions=True
+                *(ws.send(message) for ws in targets),
+                return_exceptions=True,
             )
-    
-    async def handle_client(self, websocket, path):
-        """Handle individual client connection"""
-        await self.register(websocket)
+
+    def _emit(self, payload):
+        with self._lock:
+            edge = self.active_edge
+            targets = [ws for ws, pos in self.clients.items() if pos == edge]
+        if targets and self.loop is not None:
+            asyncio.run_coroutine_threadsafe(
+                self._send(list(targets), json.dumps(payload)),
+                self.loop,
+            )
+
+    def _place(self, x, y):
+        self._placing = True
+        try:
+            place_cursor(x, y)
+        finally:
+            self._placing = False
+
+    def _hide_cursor(self):
+        # ponytail: cursor hide and key/click swallow are Windows-only
+        if self._cursor_hidden or platform.system() != 'Windows':
+            return
+        user32 = ctypes.windll.user32
+        while user32.ShowCursor(False) >= 0:
+            pass
+        self._cursor_hidden = True
+
+    def _show_cursor(self):
+        if not self._cursor_hidden:
+            return
+        user32 = ctypes.windll.user32
+        while user32.ShowCursor(True) < 0:
+            pass
+        self._cursor_hidden = False
+
+    def _capture(self):
+        self._hide_cursor()
+        self._place(self.park_x, self.park_y)
+
+    def _end_control(self, exit_x, exit_y):
+        with self._lock:
+            if not self.control_active:
+                return
+            edge = self.active_edge
+            self.control_active = False
+            self.active_edge = None
+        try:
+            exit_x, exit_y = float(exit_x), float(exit_y)
+        except (TypeError, ValueError):
+            exit_x, exit_y = 0.5, 0.5
+        x, y = return_point(
+            edge, exit_x, exit_y, self.screen_width, self.screen_height, self.edge_threshold
+        )
+        try:
+            self._place(x, y)
+        finally:
+            self._show_cursor()
+        logger.info('control returned at (%s, %s)', x, y)
+
+    def _activate(self, edge, x, y):
+        entry_x, entry_y = normalize_position(x, y, self.screen_width, self.screen_height)
+        with self._lock:
+            if self.control_active:
+                return
+            self.control_active = True
+            self.active_edge = edge
+        self._capture()
+        self._emit({
+            'type': 'control',
+            'active': True,
+            'entry_x': entry_x,
+            'entry_y': entry_y,
+        })
+        logger.info('control -> %s', edge)
+
+    def on_move(self, x, y, injected=False):
+        if not self.running or self._placing or injected:
+            return
+        try:
+            self._on_move(x, y)
+        except Exception:
+            logger.exception('move')
+
+    def _on_move(self, x, y):
+        if not self.control_active:
+            with self._lock:
+                edges = set(self.clients.values())
+            edge = hit_edge(
+                x, y, self.screen_width, self.screen_height, edges, self.edge_threshold
+            )
+            if edge:
+                self._activate(edge, x, y)
+            return
+        dx = x - self.park_x
+        dy = y - self.park_y
+        if dx or dy:
+            self._emit({'type': 'move', 'delta_x': dx, 'delta_y': dy})
+            self._place(self.park_x, self.park_y)
+
+    def _swallow_mouse(self):
+        fn = getattr(self.mouse_listener, 'suppress_event', None)
+        if fn and self.control_active:
+            fn()
+
+    def on_click(self, x, y, button, pressed, injected=False):
+        if injected or not self.running or not self.control_active:
+            return
+        try:
+            self._emit({'type': 'click', 'button': button.name, 'pressed': pressed})
+        finally:
+            self._swallow_mouse()
+
+    def on_scroll(self, x, y, dx, dy, injected=False):
+        if injected or not self.running or not self.control_active:
+            return
+        try:
+            self._emit({'type': 'scroll', 'dx': dx, 'dy': dy})
+        finally:
+            self._swallow_mouse()
+
+    def _emit_key(self, kind, key):
+        encoded = encode_key(key)
+        if encoded is not None:
+            self._emit({'type': kind, 'key': encoded})
+
+    def _keyboard_filter(self, msg, data):
+        listener = self.keyboard_listener
+        mask = (
+            listener._KBDLLHOOKSTRUCT.LLKHF_INJECTED
+            | listener._KBDLLHOOKSTRUCT.LLKHF_LOWER_IL_INJECTED
+        )
+        if data.flags & mask or not self.control_active:
+            return True
+        try:
+            if msg in listener._PRESS_MESSAGES or msg in listener._RELEASE_MESSAGES:
+                try:
+                    key = listener._event_to_key(msg, data.vkCode)
+                except Exception:
+                    key = None
+                if key is not None:
+                    kind = 'key_press' if msg in listener._PRESS_MESSAGES else 'key_release'
+                    self._emit_key(kind, key)
+        finally:
+            listener.suppress_event()
+
+    def on_press(self, key, injected=False):
+        if platform.system() == 'Windows' or injected or not self.control_active:
+            return
+        self._emit_key('key_press', key)
+
+    def on_release(self, key, injected=False):
+        if platform.system() == 'Windows' or injected or not self.control_active:
+            return
+        self._emit_key('key_release', key)
+
+    async def handle_client(self, websocket):
         try:
             async for message in websocket:
-                # Handle messages from client (e.g., return signal)
                 try:
                     data = json.loads(message)
-                    if data.get('type') == 'return_control':
-                        # Client is returning control to server
-                        if self.control_active:
-                            self.control_active = False
-                            
-                            # Get exit position from client (normalized 0-1)
-                            exit_x = data.get('exit_x', 0.5)
-                            exit_y = data.get('exit_y', 0.5)
-                            
-                            # Convert to server coordinates at the edge
-                            # IMPORTANT: Preserve Y position (or X for top/bottom)
-                            if self.edge_trigger == 'right':
-                                # Cursor returning from right, place at right edge with SAME Y
-                                server_x = self.screen_width - 1
-                                server_y = int(exit_y * self.screen_height)
-                            elif self.edge_trigger == 'left':
-                                # Cursor returning from left, place at left edge with SAME Y
-                                server_x = 0
-                                server_y = int(exit_y * self.screen_height)
-                            elif self.edge_trigger == 'top':
-                                # Cursor returning from top, place at top edge with SAME X
-                                server_x = int(exit_x * self.screen_width)
-                                server_y = 0
-                            elif self.edge_trigger == 'bottom':
-                                # Cursor returning from bottom, place at bottom edge with SAME X
-                                server_x = int(exit_x * self.screen_width)
-                                server_y = self.screen_height - 1
-                            else:
-                                server_x = int(exit_x * self.screen_width)
-                                server_y = int(exit_y * self.screen_height)
-                            
-                            # Move server cursor to the edge position
-                            pyautogui.moveTo(server_x, server_y)
-                            
-                            # Reset tracking position
-                            self.last_x = server_x
-                            self.last_y = server_y
-                            
-                            logger.info(f"✓ Control returned to server - cursor at ({server_x}, {server_y}) [Y={exit_y:.2f}]")
-                    
-                    elif data.get('type') == 'clipboard':
-                        # Client sent clipboard content
-                        clipboard_text = data.get('text', '')
-                        if clipboard_text and self.clipboard_enabled:
-                            from utils import set_clipboard
-                            if set_clipboard(clipboard_text):
-                                self.last_clipboard = clipboard_text
-                                logger.info(f"Clipboard synced from client ({len(clipboard_text)} chars)")
                 except json.JSONDecodeError:
-                    pass
+                    continue
+                kind = data.get('type')
+                if kind == 'hello':
+                    pos = data.get('position')
+                    if pos not in ('left', 'right', 'top', 'bottom'):
+                        logger.warning('ignored client position %r', pos)
+                        continue
+                    with self._lock:
+                        replaced = any(
+                            other is not websocket and other_pos == pos
+                            for other, other_pos in self.clients.items()
+                        )
+                        for other, other_pos in list(self.clients.items()):
+                            if other is not websocket and other_pos == pos:
+                                self.clients.pop(other, None)
+                        self.clients[websocket] = pos
+                        count = len(self.clients)
+                        drop = replaced and self.control_active and self.active_edge == pos
+                    if drop:
+                        self._end_control(0.5, 0.5)
+                    logger.info('client %r at %s on %s (%d connected)',
+                                data.get('machine', 'unknown'), websocket.remote_address, pos, count)
+                elif kind == 'return_control':
+                    with self._lock:
+                        owns = (
+                            self.control_active
+                            and self.clients.get(websocket) == self.active_edge
+                        )
+                    if owns:
+                        self._end_control(data.get('exit_x', 0.5), data.get('exit_y', 0.5))
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
-            await self.unregister(websocket)
-    
-    def check_edge_trigger(self, x, y):
-        """Check if cursor is at edge to trigger client control"""
-        at_edge = False
-        
-        if self.edge_trigger == 'right':
-            at_edge = x >= (self.screen_width - self.edge_threshold)
-        elif self.edge_trigger == 'left':
-            at_edge = x <= self.edge_threshold
-        elif self.edge_trigger == 'top':
-            at_edge = y <= self.edge_threshold
-        elif self.edge_trigger == 'bottom':
-            at_edge = y >= (self.screen_height - self.edge_threshold)
-        
-        # Activate control when reaching edge (only once)
-        if at_edge and not self.control_active:
-            self.control_active = True
-            
-            # Store the position where we entered client
-            self.entry_x = x
-            self.entry_y = y
-            
-            logger.info(f"✓ Client control ACTIVATED - cursor at edge ({x}, {y})")
-            
-            # Send activation signal with entry position
-            data = {
-                'type': 'control',
-                'active': True,
-                'entry_y': normalize_position(x, y, self.screen_width, self.screen_height)[1],
-                'entry_x': normalize_position(x, y, self.screen_width, self.screen_height)[0],
-                'server_sensitivity': self.mouse_sensitivity,
-                'server_acceleration': self.mouse_acceleration
-            }
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast(json.dumps(data)),
-                self.loop
-            )
-        
-        return self.control_active
-    
-    def on_move(self, x, y):
-        """Mouse move event handler"""
-        if self.running:
-            # Calculate delta from actual mouse movement
-            delta_x = x - self.last_x
-            delta_y = y - self.last_y
-            
-            # Check if we should activate client control
-            if not self.control_active:
-                # Not active yet, check if we hit the edge
-                self.check_edge_trigger(x, y)
-                # Update last position when not active
-                self.last_x = x
-                self.last_y = y
-            else:
-                # Control is ACTIVE - cursor should stay at edge on server
-                # Keep server cursor locked at the edge position
-                if self.edge_trigger == 'right':
-                    lock_x = self.screen_width - 1
-                    lock_y = y  # Allow vertical movement
-                    pyautogui.moveTo(lock_x, lock_y)
-                    # Track both X and Y delta for client
-                    delta_x = x - self.last_x
-                    delta_y = y - self.last_y
-                    self.last_x = lock_x
-                    self.last_y = lock_y
-                elif self.edge_trigger == 'left':
-                    lock_x = 0
-                    lock_y = y
-                    pyautogui.moveTo(lock_x, lock_y)
-                    delta_x = x - self.last_x
-                    delta_y = y - self.last_y
-                    self.last_x = lock_x
-                    self.last_y = lock_y
-                elif self.edge_trigger == 'top':
-                    lock_x = x
-                    lock_y = 0
-                    pyautogui.moveTo(lock_x, lock_y)
-                    delta_x = x - self.last_x
-                    delta_y = y - self.last_y
-                    self.last_x = lock_x
-                    self.last_y = lock_y
-                elif self.edge_trigger == 'bottom':
-                    lock_x = x
-                    lock_y = self.screen_height - 1
-                    pyautogui.moveTo(lock_x, lock_y)
-                    delta_x = x - self.last_x
-                    delta_y = y - self.last_y
-                    self.last_x = lock_x
-                    self.last_y = lock_y
-                
-                # Send delta to client (client cursor moves freely)
-                if abs(delta_x) > 0 or abs(delta_y) > 0:
-                    data = {
-                        'type': 'move',
-                        'delta_x': delta_x,
-                        'delta_y': delta_y
-                    }
-                    asyncio.run_coroutine_threadsafe(
-                        self.broadcast(json.dumps(data)),
-                        self.loop
-                    )
-    
-    def on_click(self, x, y, button, pressed):
-        """Mouse click event handler"""
-        if self.running and self.control_active:
-            norm_x, norm_y = normalize_position(x, y, self.screen_width, self.screen_height)
-            data = {
-                'type': 'click',
-                'x': norm_x,
-                'y': norm_y,
-                'button': button.name,
-                'pressed': pressed
-            }
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast(json.dumps(data)),
-                self.loop
-            )
-    
-    def on_scroll(self, x, y, dx, dy):
-        """Mouse scroll event handler"""
-        if self.running and self.control_active:
-            data = {
-                'type': 'scroll',
-                'dx': dx,
-                'dy': dy
-            }
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast(json.dumps(data)),
-                self.loop
-            )
-    
-    def on_press(self, key):
-        """Keyboard press event handler - only when control is active"""
-        if self.running and self.control_active:
-            try:
-                # Handle special keys
-                from pynput.keyboard import Key
-                
-                if hasattr(key, 'char') and key.char is not None:
-                    # Regular character key
-                    key_data = {
-                        'type': 'char',
-                        'char': key.char
-                    }
-                else:
-                    # Special key (Ctrl, Alt, Shift, etc.)
-                    key_name = str(key).replace('Key.', '')
-                    key_data = {
-                        'type': 'special',
-                        'key': key_name
-                    }
-                
-                data = {
-                    'type': 'key_press',
-                    'key_data': key_data
-                }
-                
-                asyncio.run_coroutine_threadsafe(
-                    self.broadcast(json.dumps(data)),
-                    self.loop
+            with self._lock:
+                self.clients.pop(websocket, None)
+                orphan = self.control_active and not any(
+                    pos == self.active_edge for pos in self.clients.values()
                 )
-                
-            except Exception as e:
-                logger.error(f"Key press error: {e}")
-    
-    def on_release(self, key):
-        """Keyboard release event handler - only when control is active"""
-        if self.running and self.control_active:
-            try:
-                # Handle special keys
-                from pynput.keyboard import Key
-                
-                if hasattr(key, 'char') and key.char is not None:
-                    # Regular character key
-                    key_data = {
-                        'type': 'char',
-                        'char': key.char
-                    }
-                else:
-                    # Special key
-                    key_name = str(key).replace('Key.', '')
-                    key_data = {
-                        'type': 'special',
-                        'key': key_name
-                    }
-                
-                data = {
-                    'type': 'key_release',
-                    'key_data': key_data
-                }
-                
-                asyncio.run_coroutine_threadsafe(
-                    self.broadcast(json.dumps(data)),
-                    self.loop
-                )
-                
-            except Exception as e:
-                logger.error(f"Key release error: {e}")
-    
-    async def monitor_clipboard(self):
-        """Monitor clipboard changes and sync to clients"""
-        while self.running:
-            try:
-                if self.clipboard_enabled and self.clients:
-                    current_clipboard = get_clipboard()
-                    
-                    if current_clipboard and current_clipboard != self.last_clipboard:
-                        # Clipboard changed, sync to clients
-                        self.last_clipboard = current_clipboard
-                        
-                        data = {
-                            'type': 'clipboard',
-                            'text': current_clipboard
-                        }
-                        
-                        await self.broadcast(json.dumps(data))
-                        logger.info(f"Clipboard synced to clients ({len(current_clipboard)} chars)")
-                
-                # Check every 500ms
-                await asyncio.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Clipboard monitoring error: {e}")
-                await asyncio.sleep(1)
-    
+                count = len(self.clients)
+            if orphan:
+                self._end_control(0.5, 0.5)
+            logger.info('client left (%d connected)', count)
+
     async def start(self):
-        """Start WebSocket server and input listeners"""
         self.running = True
-        self.loop = asyncio.get_event_loop()
-        
-        # Start mouse listener
+        self.loop = asyncio.get_running_loop()
         self.mouse_listener = mouse.Listener(
             on_move=self.on_move,
             on_click=self.on_click,
-            on_scroll=self.on_scroll
+            on_scroll=self.on_scroll,
         )
-        self.mouse_listener.start()
-        
-        # Start keyboard listener
         self.keyboard_listener = keyboard.Listener(
             on_press=self.on_press,
-            on_release=self.on_release
+            on_release=self.on_release,
+            win32_event_filter=self._keyboard_filter,
         )
+        self.mouse_listener.start()
         self.keyboard_listener.start()
-        
-        logger.info(f"Server starting on {self.host}:{self.port}")
-        logger.info(f"Screen resolution: {self.screen_width}x{self.screen_height}")
-        logger.info(f"Edge trigger: {self.edge_trigger} (threshold: {self.edge_threshold}px)")
-        logger.info(f"Clipboard sync: {'Enabled' if self.clipboard_enabled else 'Disabled'}")
-        logger.info("Move cursor to the RIGHT EDGE to activate client control")
-        
-        # Start clipboard monitoring task
-        clipboard_task = asyncio.create_task(self.monitor_clipboard())
-        
+        logger.info('listening on %s:%s', self.host, self.port)
+        logger.info('screen %sx%s', self.screen_width, self.screen_height)
+        logger.info('move into the edge facing a connected PC')
         async with websockets.serve(self.handle_client, self.host, self.port):
-            await asyncio.Future()  # Run forever
-    
+            await asyncio.Future()
+
     def stop(self):
-        """Stop server and listeners"""
         self.running = False
+        self._show_cursor()
         if hasattr(self, 'mouse_listener'):
             self.mouse_listener.stop()
         if hasattr(self, 'keyboard_listener'):
             self.keyboard_listener.stop()
-        logger.info("Server stopped")
+        logger.info('server stopped')
 
 
 if __name__ == '__main__':
@@ -393,5 +285,6 @@ if __name__ == '__main__':
     try:
         asyncio.run(server.start())
     except KeyboardInterrupt:
+        logger.info('server shutdown')
+    finally:
         server.stop()
-        logger.info("Server shutdown")

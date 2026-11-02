@@ -8,8 +8,6 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 - ✅ **Edge Detection** - Automatic transition when cursor reaches screen edge
 - ✅ **Cross-platform** - Works on Windows and macOS
 - ✅ **Keyboard Forwarding** - Full keyboard support including special keys
-- ✅ **Clipboard Sync** - Copy on one PC, paste on another (text)
-- ✅ **Mouse Sensitivity Sync** - Automatic DPI/sensitivity scaling
 - ✅ **Click & Scroll** - Full mouse button and scroll wheel support
 - ✅ **Keyboard Shortcuts** - Ctrl+C, Ctrl+V, and all shortcuts work
 - ✅ **Multi-directional** - Support left, right, top, bottom positioning
@@ -24,8 +22,6 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 | Mouse & Keyboard Control | ✅ | ✅ |
 | Edge Detection | ✅ | ✅ |
 | Cross-platform | ✅ | ✅ |
-| Clipboard Sync | ✅ | ✅ |
-| Mouse Sensitivity Sync | ✅ | ✅ |
 | Special Keys (Ctrl/Alt/Cmd) | ✅ | ✅ |
 | Keyboard Shortcuts | ✅ | ✅ |
 | Drag & Drop Files | ✅ | 🚧 Planned |
@@ -37,7 +33,7 @@ Open-source Python implementation of ShareMouse functionality - Control multiple
 
 ## 📋 Requirements
 
-- Python 3.7+
+- Python 3.11+ (verified here with Python 3.14)
 - Windows 10+ or macOS 10.14+
 - Network connection (LAN recommended for best performance)
 
@@ -51,7 +47,70 @@ pip install -r requirements.txt
 
 ### 2. Launch Application
 
-**Easy Way (Recommended):**
+**Saved server/client configuration (recommended):**
+
+Run these commands from this repository on **each computer**, using its own
+Python environment. On Windows, use `.\.venv\Scripts\python.exe` in place of
+`python` if Python is installed in the repository's `.venv`.
+
+**Server: the computer whose physical mouse and keyboard you use:**
+
+```bash
+python configure.py --role server --host 0.0.0.0
+python run_sharemouse.py
+```
+
+The configuration script displays the machine name, its SERVER role, listening
+port and local IPv4 candidates. Choose the server's LAN IP for the clients.
+`0.0.0.0` means listen on all IPv4 adapters; use `--host YOUR_LAN_IP` to bind
+one adapter. The default port is 8765; `--port NUMBER` changes it on either role.
+
+**Client: the computer being controlled (example server IP 192.168.1.100):**
+
+```bash
+python configure.py --role client --host 192.168.1.100 --position right
+python run_sharemouse.py
+```
+
+`--position` describes this client's screen relative to the server:
+`right`, `left`, `top`, or `bottom`. Use one client per edge. Run the server
+first, then the clients. Both sides need their runner open. Move the server
+pointer across the configured edge to control that client, and back through
+the facing edge to return. Ctrl+C stops the runner.
+
+To inspect the saved role without starting control:
+
+```bash
+python configure.py --show
+python run_sharemouse.py --check
+```
+
+`--check` validates configuration only; it does not verify dependencies,
+firewall or a working connection. Run `python test_setup.py` to check the
+local installation. Running `python configure.py` without arguments prompts
+for role and endpoint. Configuration is saved to ignored `config.json` beside
+the scripts; existing configuration is copied into `backup/` before replacement.
+Configure each computer separately: a configuration copied from another machine
+is rejected. No automatic startup, firewall rule or network discovery is installed.
+
+The server's live log identifies each connecting client by its self-reported
+machine name, remote address and edge; the configuration display shows saved
+settings, not a live inventory. Machine names are labels, not authentication.
+
+Functional limits: there is no clipboard/file transfer, monitor spanning or
+emergency return hotkey. Local input suppression is implemented for Windows;
+equivalent macOS behavior has not been verified. Connections use unencrypted,
+unauthenticated WebSockets, so use a trusted LAN. Client-held keys/buttons are
+released on return, disconnect and shutdown; this cannot recover after the
+client process is forcibly killed or the client machine crashes.
+
+Offline regression commands: `python test_scripts.py`,
+`python test_input_cleanup.py`, `python test_logic.py`, `python test_setup.py`.
+Before relying on a pair of PCs, verify movement and return across the shared
+edge, left/right click, drag, scroll, typing, modifier shortcuts and disconnect
+while holding a key. These physical two-computer checks have not been run here.
+
+**Legacy interactive launcher (does not read the saved configuration):**
 ```bash
 python launcher.py
 ```
@@ -107,12 +166,12 @@ sharemouse-py/
 
 ### Server (Primary PC)
 
-Edit `server.py` to customize:
+The secondary PC picks the side (`left`, `right`, `top`, or `bottom`). One machine per edge. The primary listens on every edge that has a client.
+
 ```python
 server = MouseServer(
     host='0.0.0.0',        # Listen on all interfaces
     port=8765,             # WebSocket port
-    edge_trigger='right',  # Edge to trigger: right/left/top/bottom
     edge_threshold=5       # Pixels from edge to trigger (default: 5)
 )
 ```
@@ -199,10 +258,7 @@ Grant Accessibility permissions:
 
 ### Cursor Stuck at Edge
 
-This has been fixed in the latest version with:
-- Directional delta filtering
-- 5px boundary protection at entry edge
-- Position reset on control switch
+Coming back onto the primary takes a few pixels of movement past the shared edge, then the pointer is placed just inside that edge so it does not immediately leave again.
 
 ### High Latency
 
@@ -233,13 +289,13 @@ Primary PC (Controller)          Secondary PC (Controlled)
 ### Edge Detection Flow
 
 ```
-1. Primary: Cursor reaches edge (X >= screen_width - 5)
-2. Primary: Activate control, send signal to secondary
-3. Secondary: Position cursor at opposite edge (X = 0)
-4. Primary: Send delta movements (dx, dy)
-5. Secondary: Apply delta to cursor position
-6. Primary: Cursor moves back from edge
-7. Primary: Deactivate control, return to primary
+1. Primary: cursor reaches an edge that has a connected PC
+2. Primary: parks its cursor and tells that PC to take over (the cursor is hidden on Windows)
+3. Secondary: places the cursor on the facing edge
+4. Primary: sends movement deltas
+5. Secondary: applies them
+6. Secondary: cursor crosses back through the shared edge
+7. Primary: shows its cursor just inside that edge
 ```
 
 ### Delta-based Movement
@@ -265,7 +321,6 @@ For production use, consider:
 
 ### Planned Features
 
-- [ ] **Clipboard Sync** - Copy/paste between PCs
 - [ ] **Drag & Drop** - Transfer files by dragging
 - [ ] **Auto-discovery** - Automatic PC detection on LAN
 - [ ] **Encryption** - Secure communication
@@ -289,14 +344,13 @@ For production use, consider:
 - **Use LAN:** Wired connection provides lowest latency
 - **Screen Alignment:** Physically align monitors for intuitive cursor flow
 - **Edge Threshold:** Adjust `edge_threshold` if triggering too easily/hard
-- **Return Distance:** Default 50px from edge to return control
+- **Return Distance:** The pointer must travel 5px past the shared edge before control comes back
 - **Testing:** Test locally first before network setup
 - **Firewall:** Ensure port 8765 is open on both PCs
 
 ## 🤝 Contributing
 
 Contributions are welcome! Areas that need help:
-- Clipboard synchronization implementation
 - File drag & drop functionality
 - Auto-discovery protocol
 - GUI development

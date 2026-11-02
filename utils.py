@@ -1,235 +1,140 @@
-"""
-Utility functions for mouse synchronization
-"""
-import asyncio
-import pyautogui
-import time
+"""Edge handoff math shared by the primary and secondary PCs."""
 import platform
+
+from pynput.keyboard import Key, KeyCode
+
+EDGE_THRESHOLD = 5
+POSITIONS = ('left', 'right', 'top', 'bottom')
 
 
 def get_screen_size():
-    """Get current screen resolution"""
+    import pyautogui
     size = pyautogui.size()
     return size.width, size.height
 
 
-def get_mouse_sensitivity():
-    """
-    Detect mouse sensitivity/DPI settings
-    Returns a scaling factor (1.0 = normal)
-    """
-    system = platform.system()
-    
-    try:
-        if system == 'Windows':
-            import winreg
-            # Read Windows mouse speed setting (1-20, default 10)
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
-                                r'Control Panel\Mouse')
-            speed, _ = winreg.QueryValueEx(key, 'MouseSpeed')
-            sensitivity, _ = winreg.QueryValueEx(key, 'MouseSensitivity')
-            winreg.CloseKey(key)
-            
-            # Convert to scaling factor
-            # Windows sensitivity: 1-20, default 10
-            return int(sensitivity) / 10.0
-            
-        elif system == 'Darwin':  # macOS
-            import subprocess
-            # Read macOS mouse tracking speed
-            result = subprocess.run(['defaults', 'read', '-g', 
-                                   'com.apple.mouse.scaling'],
-                                  capture_output=True, text=True)
-            if result.returncode == 0:
-                speed = float(result.stdout.strip())
-                # macOS speed: -1 to 3, default 1
-                return (speed + 1) / 2.0
-    except Exception as e:
-        print(f"Could not detect mouse sensitivity: {e}")
-    
-    # Default: no scaling
-    return 1.0
-
-
-def get_mouse_acceleration():
-    """
-    Detect if mouse acceleration is enabled
-    Returns True if enabled, False otherwise
-    """
-    system = platform.system()
-    
-    try:
-        if system == 'Windows':
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                r'Control Panel\Mouse')
-            accel, _ = winreg.QueryValueEx(key, 'MouseSpeed')
-            winreg.CloseKey(key)
-            return int(accel) > 0
-            
-        elif system == 'Darwin':  # macOS
-            # macOS always has some acceleration
-            return True
-    except:
-        pass
-    
-    return False
-
-
-def get_clipboard():
-    """
-    Get clipboard content (text only for now)
-    Returns clipboard text or None
-    """
-    try:
-        import pyperclip
-        return pyperclip.paste()
-    except Exception as e:
-        print(f"Could not get clipboard: {e}")
-        return None
-
-
-def set_clipboard(text):
-    """
-    Set clipboard content
-    """
-    try:
-        import pyperclip
-        pyperclip.copy(text)
-        return True
-    except Exception as e:
-        print(f"Could not set clipboard: {e}")
-        return False
-
-
-def scale_delta(delta_x, delta_y, source_sensitivity, target_sensitivity):
-    """
-    Scale mouse delta based on sensitivity difference
-    
-    Args:
-        delta_x, delta_y: Original delta from source
-        source_sensitivity: Source PC sensitivity factor
-        target_sensitivity: Target PC sensitivity factor
-    
-    Returns:
-        Scaled (delta_x, delta_y)
-    """
-    if source_sensitivity == 0 or target_sensitivity == 0:
-        return delta_x, delta_y
-    
-    # Calculate scaling factor
-    scale = target_sensitivity / source_sensitivity
-    
-    # Apply scaling
-    scaled_x = int(delta_x * scale)
-    scaled_y = int(delta_y * scale)
-    
-    return scaled_x, scaled_y
+def place_cursor(x, y):
+    x, y = int(x), int(y)
+    if platform.system() == 'Windows':
+        import ctypes
+        ctypes.windll.user32.SetCursorPos(x, y)
+        return
+    import pyautogui
+    pyautogui.FAILSAFE = False
+    pyautogui.PAUSE = 0
+    pyautogui.moveTo(x, y)
 
 
 def normalize_position(x, y, screen_width, screen_height):
-    """
-    Normalize screen position to 0.0-1.0 range
-    This allows handling different screen resolutions between source and target
-    """
-    norm_x = x / screen_width
-    norm_y = y / screen_height
-    return norm_x, norm_y
+    return x / screen_width, y / screen_height
 
 
-def denormalize_position(norm_x, norm_y, screen_width, screen_height):
-    """
-    Convert normalized position back to actual screen coordinates
-    """
-    x = int(norm_x * screen_width)
-    y = int(norm_y * screen_height)
-    
-    # Clamp to screen bounds
-    x = max(0, min(x, screen_width - 1))
-    y = max(0, min(y, screen_height - 1))
-    
-    return x, y
+def _clamp(value, limit):
+    return max(0, min(int(value), limit - 1))
 
 
-async def smooth_move(start_x, start_y, end_x, end_y, steps=5):
-    """
-    Smooth cursor movement with interpolation
-    Reduces jittery movement for better visual experience
-    """
-    if steps <= 1:
-        pyautogui.moveTo(end_x, end_y)
-        return
-    
-    for i in range(1, steps + 1):
-        t = i / steps
-        # Linear interpolation
-        x = int(start_x + (end_x - start_x) * t)
-        y = int(start_y + (end_y - start_y) * t)
-        pyautogui.moveTo(x, y)
-        await asyncio.sleep(0.001)  # Small delay for smoothness
-
-
-def calculate_delta(prev_pos, curr_pos):
-    """
-    Calculate position delta for bandwidth optimization
-    Returns None if delta is too small (no need to send)
-    """
-    threshold = 2  # pixels
-    dx = curr_pos[0] - prev_pos[0]
-    dy = curr_pos[1] - prev_pos[1]
-    
-    if abs(dx) < threshold and abs(dy) < threshold:
+def hit_edge(x, y, width, height, edges, threshold=EDGE_THRESHOLD):
+    """Edge the pointer is on, among `edges`. A corner goes to the deeper side."""
+    scored = []
+    if 'right' in edges and x >= width - threshold:
+        scored.append((x - (width - threshold), 'right'))
+    if 'left' in edges and x <= threshold:
+        scored.append((threshold - x, 'left'))
+    if 'bottom' in edges and y >= height - threshold:
+        scored.append((y - (height - threshold), 'bottom'))
+    if 'top' in edges and y <= threshold:
+        scored.append((threshold - y, 'top'))
+    if not scored:
         return None
-    
-    return (dx, dy)
+    scored.sort(reverse=True)
+    return scored[0][1]
 
 
-class LatencyMeasurement:
-    """Simple latency measurement utility"""
-    
-    def __init__(self):
-        self.samples = []
-        self.max_samples = 100
-    
-    def add_sample(self, latency_ms):
-        """Add latency sample"""
-        self.samples.append(latency_ms)
-        if len(self.samples) > self.max_samples:
-            self.samples.pop(0)
-    
-    def get_average(self):
-        """Get average latency"""
-        if not self.samples:
-            return 0
-        return sum(self.samples) / len(self.samples)
-    
-    def get_stats(self):
-        """Get latency statistics"""
-        if not self.samples:
-            return {'avg': 0, 'min': 0, 'max': 0}
-        
-        return {
-            'avg': sum(self.samples) / len(self.samples),
-            'min': min(self.samples),
-            'max': max(self.samples)
-        }
+def entry_point(position, entry_x, entry_y, width, height):
+    """Where the pointer appears on the secondary, on the edge facing the primary."""
+    if position == 'right':
+        return 0, _clamp(entry_y * height, height)
+    if position == 'left':
+        return width - 1, _clamp(entry_y * height, height)
+    if position == 'top':
+        return _clamp(entry_x * width, width), height - 1
+    if position == 'bottom':
+        return _clamp(entry_x * width, width), 0
+    return width // 2, height // 2
 
 
-class RateLimiter:
-    """Rate limiter for event throttling"""
-    
-    def __init__(self, max_rate=120):
-        """
-        max_rate: maximum events per second
-        """
-        self.max_rate = max_rate
-        self.min_interval = 1.0 / max_rate
-        self.last_time = 0
-    
-    def should_process(self):
-        """Check if event should be processed based on rate limit"""
-        current_time = time.time()
-        if current_time - self.last_time >= self.min_interval:
-            self.last_time = current_time
-            return True
-        return False
+def return_point(edge, exit_x, exit_y, width, height, threshold=EDGE_THRESHOLD):
+    """Primary pointer spot just inside `edge`, so the handoff does not immediately re-fire."""
+    inset = threshold + 1
+    if edge == 'right':
+        return width - inset, _clamp(exit_y * height, height)
+    if edge == 'left':
+        return inset, _clamp(exit_y * height, height)
+    if edge == 'top':
+        return _clamp(exit_x * width, width), inset
+    if edge == 'bottom':
+        return _clamp(exit_x * width, width), height - inset
+    return _clamp(exit_x * width, width), _clamp(exit_y * height, height)
+
+
+def crossed_back(position, x, y, width, height, threshold=EDGE_THRESHOLD):
+    """True once the secondary pointer has moved through the gutter back toward the primary."""
+    if position == 'right':
+        return x < -threshold
+    if position == 'left':
+        return x >= width + threshold
+    if position == 'top':
+        return y >= height + threshold
+    if position == 'bottom':
+        return y < -threshold
+    return False
+
+
+def step_position(position, x, y, dx, dy, width, height):
+    """Apply a delta. Only the edge facing the primary may leave the screen."""
+    x += dx
+    y += dy
+    if position == 'right':
+        x = min(x, width - 1)
+        y = min(max(y, 0), height - 1)
+    elif position == 'left':
+        x = max(x, 0)
+        y = min(max(y, 0), height - 1)
+    elif position == 'top':
+        x = min(max(x, 0), width - 1)
+        y = max(y, 0)
+    elif position == 'bottom':
+        x = min(max(x, 0), width - 1)
+        y = min(y, height - 1)
+    else:
+        x = min(max(x, 0), width - 1)
+        y = min(max(y, 0), height - 1)
+    return x, y, crossed_back(position, x, y, width, height)
+
+
+def encode_key(key):
+    if isinstance(key, Key):
+        return {'key': key.name}
+    vk = getattr(key, 'vk', None)
+    if vk is not None:
+        return {'vk': int(vk)}
+    char = getattr(key, 'char', None)
+    if char:
+        return {'char': char}
+    return None
+
+
+def decode_key(data):
+    if not isinstance(data, dict):
+        return None
+    if 'key' in data:
+        try:
+            return Key[data['key']]
+        except KeyError:
+            return None
+    if 'vk' in data:
+        return KeyCode.from_vk(int(data['vk']))
+    char = data.get('char')
+    if char:
+        return KeyCode.from_char(char)
+    return None

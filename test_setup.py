@@ -61,30 +61,12 @@ def test_mouse_control():
 
 
 def test_utils():
-    """Test utility functions"""
+    """Test edge handoff and key encoding."""
     print("\nTesting utility functions...")
-    
     try:
-        from utils import normalize_position, denormalize_position, get_screen_size
-        
-        # Test normalization
-        width, height = get_screen_size()
-        norm_x, norm_y = normalize_position(width // 2, height // 2, width, height)
-        
-        if abs(norm_x - 0.5) < 0.01 and abs(norm_y - 0.5) < 0.01:
-            print("✓ Position normalization working")
-        else:
-            print(f"✗ Position normalization failed: got ({norm_x}, {norm_y}), expected (0.5, 0.5)")
-            return False
-        
-        # Test denormalization
-        x, y = denormalize_position(0.5, 0.5, width, height)
-        if abs(x - width // 2) < 2 and abs(y - height // 2) < 2:
-            print("✓ Position denormalization working")
-        else:
-            print(f"✗ Position denormalization failed")
-            return False
-        
+        import test_logic
+        test_logic.run()
+        print("✓ Edge handoff and key encoding")
         return True
     except Exception as e:
         print(f"✗ Utility functions test failed: {e}")
