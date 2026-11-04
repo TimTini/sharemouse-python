@@ -1,8 +1,13 @@
 """Secondary PC. Applies pointer and keyboard events from the primary."""
 import asyncio
+import ctypes
+from ctypes import wintypes
 import json
 import logging
+import msvcrt
 import socket
+import sys
+from time import perf_counter
 
 import link
 from devices import Button, KeyController, MouseController
@@ -12,6 +17,7 @@ from utils import decode_key, entry_point, get_screen_size, step_position
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 
 BUTTONS = {
     'left': Button.left,
@@ -39,6 +45,10 @@ class MouseClient:
         self.available = True
         self.loop = None
         self.power_monitor = None
+        self._motion_color = False
+        self._last_move_at = None
+        self._last_move_gap = None
+        self._last_motion_warning = float('-inf')
 
     def on_power_change(self, available):
         if self.loop is not None and not self.loop.is_closed():
@@ -65,6 +75,8 @@ class MouseClient:
 
     def release_input(self):
         self.control_active = False
+        self._last_move_at = self._last_move_gap = None
+        self._last_motion_warning = float('-inf')
         for controller, held in ((self.keys, self.pressed_keys),
                                  (self.mouse, self.pressed_buttons)):
             for item in list(held):
@@ -93,12 +105,25 @@ class MouseClient:
             ssl_context = link.client_context(self.tls_dir)
         self.running = True
         self.power_monitor = PowerMonitor(self.on_power_change)
+        console = None
+        mode = wintypes.DWORD()
+        if sys.stderr.isatty():
+            console = wintypes.HANDLE(msvcrt.get_osfhandle(sys.stderr.fileno()))
+            kernel32 = ctypes.windll.kernel32
+            self._motion_color = bool(kernel32.GetConsoleMode(console, ctypes.byref(mode)) and
+                                      kernel32.SetConsoleMode(
+                                          console, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
         try:
             self.power_monitor.start()
             await self._connection_loop(ssl_context)
         finally:
-            self.power_monitor.stop()
-            self.power_monitor = None
+            try:
+                self.power_monitor.stop()
+                self.power_monitor = None
+            finally:
+                if self._motion_color:
+                    kernel32.SetConsoleMode(console, mode.value)
+                    self._motion_color = False
 
     async def _connection_loop(self, ssl_context):
         retry = 1
@@ -186,9 +211,13 @@ class MouseClient:
     async def handle_move(self, data):
         if not self.control_active:
             return
+        received_at = perf_counter()
+        start_x, start_y = self.x, self.y
         steps = data['steps'] if 'steps' in data else [(data['delta_x'], data['delta_y'])]
         leaving = False
+        max_step = 0
         for dx, dy in steps:
+            max_step = max(max_step, abs(dx), abs(dy))
             self.x, self.y, leaving = step_position(
                 self.position, self.x, self.y, dx, dy, self.screen_width, self.screen_height)
             if leaving:
@@ -200,8 +229,35 @@ class MouseClient:
             await self.return_control()
             await self._send_ready()
             raise
+        self._report_motion(received_at, start_x, start_y, len(steps), max_step, leaving)
         if leaving:
             await self.return_control()
+
+    def _report_motion(self, received_at, start_x, start_y, steps, max_step, leaving):
+        apply_ms = (perf_counter() - received_at) * 1000
+        gap_ms = None if self._last_move_at is None else (received_at - self._last_move_at) * 1000
+        previous_gap = self._last_move_gap
+        self._last_move_at, self._last_move_gap = received_at, gap_ms
+        dx, dy = self.x - start_x, self.y - start_y
+        jump = max(abs(dx), abs(dy))
+        reasons = []
+        # ponytail: fixed thresholds flag likely stalls, not intentional pauses with certainty.
+        if not leaving and jump >= 32:
+            if previous_gap is not None and previous_gap <= 40 and 60 <= gap_ms <= 500:
+                reasons.append('pause+jump')
+            if steps >= 8:
+                reasons.append('bunched-moves')
+        if max_step >= 100:
+            reasons.append('large-step')
+        if apply_ms >= 16:
+            reasons.append('slow-apply')
+        if reasons and received_at - self._last_motion_warning >= 0.5:
+            self._last_motion_warning = received_at
+            gap = 'first' if gap_ms is None else f'{gap_ms:.1f} ms'
+            message = (f'[MOUSE] {", ".join(reasons)} | gap={gap} | '
+                       f'apply={apply_ms:.1f} ms | steps={steps} | '
+                       f'max_step={max_step:g} px | delta=({dx:g},{dy:g}) px')
+            logger.warning('%s', f'\x1b[91m{message}\x1b[0m' if self._motion_color else message)
 
     async def return_control(self):
         if not self.websocket or not self.control_active:

@@ -109,6 +109,23 @@ async def check():
     await client.handle_move({'steps': [[-10, 1], [10, 1]]})
     assert not client.control_active and client.y == 101
 
+    await client.handle_control({'active': True})
+    with patch.object(client, '_motion_color', True), patch('client.perf_counter', side_effect=[
+        1, 1.001, 1.005, 1.006, 1.085, 1.086,
+        2, 2.001, 3, 3.001, 4, 4.020, 5, 5.001,
+    ]), patch('client.logger.warning') as warning:
+        for steps in ([[1, 0]], [[1, 0]], [[10, 0]] * 4,
+                      [[40, 0]], [[100, 0]], [[1, 0]], [[5, 0]] * 8):
+            await client.handle_move({'steps': steps})
+        messages = [call.args[1] for call in warning.call_args_list]
+    assert len(messages) == 4, messages
+    assert 'pause+jump' in messages[0] and 'gap=80.0 ms' in messages[0]
+    assert 'large-step' in messages[1]
+    assert 'slow-apply' in messages[2]
+    assert 'bunched-moves' in messages[3]
+    assert all(msg.startswith('\x1b[91m[MOUSE]') and msg.endswith('\x1b[0m') for msg in messages)
+    await client.handle_control({'active': False})
+
     client.available = True
     with patch.object(type(client.mouse), 'position', new_callable=PropertyMock, create=True) as cursor:
         cursor.side_effect = OSError('desktop unavailable')

@@ -83,6 +83,12 @@ once per batch. Clicks, scrolling and keyboard events remain ordered. This targe
 is not a measured display FPS or a guarantee of physical LAN latency. Update and
 restart both PCs together for compatible heartbeat and motion messages.
 
+If the remote cursor stutters, look for red `[MOUSE]` warnings in the client
+console. They report a pause followed by a jump during recent movement, a large
+incoming step, many steps applied in one jump, or slow local cursor processing.
+The receive gap is measured on the client and can include pauses or scheduling
+on either PC as well as network delays.
+
 ## Checks and source layout
 
 Double-click **test.cmd** to run checks without starting input hooks. Developers
