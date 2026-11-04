@@ -77,11 +77,11 @@ unavailable; a missing heartbeat response also returns ownership (0.5-second
 probes, 2-second deadline, normally about 2.5 seconds including probe scheduling).
 OS scheduling can delay these callbacks. No sleep/display policy is changed.
 
-The server batches ordered motion at a target of 240 transport updates/second.
-The client preserves intermediate edge/clamp calculations and places its cursor
-once per batch. Clicks, scrolling and keyboard events remain ordered. This target
-is not a measured display FPS or a guarantee of physical LAN latency. Update and
-restart both PCs together for compatible heartbeat and motion messages.
+The server sends queued motion as soon as it can. Adjacent movements already
+waiting in the queue can share one message, so the send rate follows input when
+the connection keeps up. The client preserves intermediate edge calculations
+and places its cursor once per batch. Clicks, scrolling and keyboard events
+remain ordered.
 
 If the remote cursor stutters, look for red `[MOUSE]` warnings in the client
 console. They report a pause followed by a jump during recent movement, a large

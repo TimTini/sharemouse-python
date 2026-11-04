@@ -28,9 +28,7 @@ HEARTBEAT_TIMEOUT = 2.0
 
 
 class MouseServer:
-    def __init__(self, host='0.0.0.0', port=8765, edge_threshold=5, tls_dir=None, move_hz=240):
-        if not 30 <= move_hz <= 1000:
-            raise ValueError('move_hz must be between 30 and 1000')
+    def __init__(self, host='0.0.0.0', port=8765, edge_threshold=5, tls_dir=None):
         self.host = host
         self.port = port
         self.tls_dir = tls_dir
@@ -47,8 +45,6 @@ class MouseServer:
         self._cursor_hidden = False
         self.park_x = self.screen_width // 2
         self.park_y = self.screen_height // 2
-        self._move_interval = 1 / move_hz
-        self._last_move_at = 0
         self._outbox = deque()
         self._sending = False
         self._sender_task = None
@@ -97,16 +93,8 @@ class MouseServer:
                 with self._lock:
                     if not self._outbox:
                         return
-                    moving = self._outbox[0][1]['type'] == 'move'
-                if moving:
-                    await asyncio.sleep(max(0, self._move_interval - (self.loop.time() - self._last_move_at)))
-                with self._lock:
-                    if not self._outbox:
-                        continue
                     targets, payload = self._outbox.popleft()
                 await self._send(targets, json.dumps(payload, separators=(',', ':')))
-                if payload['type'] == 'move':
-                    self._last_move_at = self.loop.time()
         finally:
             with self._lock:
                 self._sending = False
@@ -427,17 +415,8 @@ class MouseServer:
         logger.info('trusted peer certificates: %d', len(peers))
         logger.info('screen %sx%s', self.screen_width, self.screen_height)
         logger.info('move into the edge facing a connected PC')
-        # The default Windows timer can round the 4 ms motion wait to 15.6 ms.
-        winmm = ctypes.windll.winmm
-        timer_result = winmm.timeBeginPeriod(1)
-        if timer_result:
-            logger.warning('could not request 1 ms Windows timer resolution: %s', timer_result)
-        try:
-            async with link.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
-                await asyncio.Future()
-        finally:
-            if not timer_result:
-                winmm.timeEndPeriod(1)
+        async with link.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
+            await asyncio.Future()
 
     def stop(self):
         self.running = False
