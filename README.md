@@ -89,6 +89,15 @@ incoming step, many steps applied in one jump, or slow local cursor processing.
 The receive gap is measured on the client and can include pauses or scheduling
 on either PC as well as network delays.
 
+On the server, compare the time of a `[NET]` warning with the client warning.
+`tcp_rtt` is Windows' estimate for the actual ShareMouse TCP connection.
+`heartbeat` includes time spent in the applications on both PCs.
+`retrans` is the increase in server bytes retransmitted since the last sample
+(normally about 0.5 seconds), or since connection start on the first sample.
+It counts bytes rather than a packet loss percentage. Samples are printed
+when the client connects, about every 10 seconds, and on high latency or new
+retransmissions.
+
 ## Checks and source layout
 
 Double-click **test.cmd** to run checks without starting input hooks. Developers

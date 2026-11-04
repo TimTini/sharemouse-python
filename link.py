@@ -6,12 +6,14 @@ Pass an SSL context to serve or connect to run the same frames over TLS.
 """
 import asyncio
 import base64
+import ctypes
 import hashlib
 import ipaddress
 import os
 import platform
 import socket
 import ssl
+import struct
 import subprocess
 from pathlib import Path
 
@@ -139,6 +141,25 @@ class Socket:
         self._mask = mask
         self._closed = False
         self._peer_closed = False
+
+    def tcp_info(self):
+        """Return Windows TCP RTT in milliseconds and cumulative retransmitted bytes."""
+        sock = self.writer.get_extra_info('socket')
+        version = ctypes.c_uint32(0)
+        # TCP_INFO_v0 on Windows x64: RttUs at byte 20, BytesRetrans at byte 68.
+        layout = struct.Struct('<20xI44xI16x')
+        output = ctypes.create_string_buffer(layout.size)
+        returned = ctypes.c_uint32()
+        winsock = ctypes.windll.ws2_32
+        sio_tcp_info = 0xD8000027  # _WSAIORW(IOC_VENDOR, 39) in mstcpip.h
+        if winsock.WSAIoctl(ctypes.c_size_t(sock.fileno()), ctypes.c_uint32(sio_tcp_info),
+                           ctypes.byref(version), ctypes.sizeof(version), output, len(output),
+                           ctypes.byref(returned), None, None):
+            raise OSError(f'WSAIoctl(SIO_TCP_INFO) failed: {winsock.WSAGetLastError()}')
+        if returned.value != layout.size:
+            raise OSError(f'SIO_TCP_INFO returned {returned.value} bytes, expected {layout.size}')
+        rtt_us, retransmitted = layout.unpack(output.raw)
+        return rtt_us / 1000, retransmitted
 
     async def send(self, message):
         data = message.encode('utf-8') if isinstance(message, str) else message

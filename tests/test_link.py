@@ -49,6 +49,8 @@ async def check_tls():
 
     async def handler(websocket):
         async for message in websocket:
+            rtt_ms, retransmitted = websocket.tcp_info()
+            assert rtt_ms >= 0 and retransmitted == 0
             seen.append(message)
             await websocket.send('pong:' + message)
             return

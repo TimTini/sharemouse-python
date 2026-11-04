@@ -36,6 +36,9 @@ class Peer:
     async def send(self, text):
         self.sent.append(json.loads(text))
 
+    def tcp_info(self):
+        return 1.0, 0
+
 
 async def check():
     peer = Peer()
@@ -170,6 +173,9 @@ async def check_ready_peer():
             if data['type'] == 'heartbeat':
                 await self.incoming.put({'type': 'heartbeat_ack', 'id': data['id'], 'ready': self.ready})
 
+        def tcp_info(self):
+            return 1.0, 120
+
         def __aiter__(self):
             return self.messages()
 
@@ -183,10 +189,13 @@ async def check_ready_peer():
     peer = ReadyPeer()
     app = make_server(peer)
     await peer.incoming.put({'type': 'hello', 'position': 'right', 'ready': True})
-    with patch('server.HEARTBEAT_TIMEOUT', 0.1), patch('server.HEARTBEAT_INTERVAL', 0.01):
+    with patch('server.HEARTBEAT_TIMEOUT', 0.1), patch('server.HEARTBEAT_INTERVAL', 0.01), \
+            patch('server.logger.warning') as warning:
         task = asyncio.create_task(app.handle_client(peer))
         await asyncio.sleep(0.04)
         assert app.control_active and any(p['type'] == 'heartbeat' for p in peer.sent)
+        net = [call.args for call in warning.call_args_list if call.args[0].startswith('[NET]')]
+        assert len(net) == 1 and net[0][-2:] == (120, 120)
         peer.ready = False
         await peer.incoming.put({'type': 'ready', 'ready': False})
         await asyncio.sleep(0.005)

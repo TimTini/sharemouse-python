@@ -300,14 +300,34 @@ class MouseServer:
     async def _watch_client(self, websocket):
         event = asyncio.Event()
         token = 0
+        previous_retrans = None
+        tcp_info_available = True
         try:
             while websocket in self.clients:
                 token += 1
                 event.clear()
                 self._heartbeats[websocket] = (token, event)
+                started_at = self.loop.time()
                 async with asyncio.timeout(HEARTBEAT_TIMEOUT):
                     await websocket.send(json.dumps({'type': 'heartbeat', 'id': token}))
                     await event.wait()
+                heartbeat_ms = (self.loop.time() - started_at) * 1000
+                if tcp_info_available:
+                    try:
+                        rtt_ms, retrans = websocket.tcp_info()
+                    except OSError as error:
+                        logger.warning('[NET] %s TCP diagnostics unavailable: %s',
+                                       websocket.remote_address, error)
+                        tcp_info_available = False
+                    else:
+                        added = retrans if previous_retrans is None else (retrans - previous_retrans) % (1 << 32)
+                        previous_retrans = retrans
+                        slow = added or rtt_ms >= 30 or heartbeat_ms >= 50
+                        if slow or token == 1 or token % 20 == 0:
+                            log = logger.warning if slow else logger.info
+                            log('[NET] %s tcp_rtt=%.1f ms heartbeat=%.1f ms '
+                                'retrans=+%d B total=%d B',
+                                websocket.remote_address, rtt_ms, heartbeat_ms, added, retrans)
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
         except (OSError, TimeoutError, link.WebSocketException):
             logger.warning('client heartbeat lost; reclaiming local control')
