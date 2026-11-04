@@ -407,8 +407,17 @@ class MouseServer:
         logger.info('trusted peer certificates: %d', len(peers))
         logger.info('screen %sx%s', self.screen_width, self.screen_height)
         logger.info('move into the edge facing a connected PC')
-        async with link.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
-            await asyncio.Future()
+        # The default Windows timer can round the 4 ms motion wait to 15.6 ms.
+        winmm = ctypes.windll.winmm
+        timer_result = winmm.timeBeginPeriod(1)
+        if timer_result:
+            logger.warning('could not request 1 ms Windows timer resolution: %s', timer_result)
+        try:
+            async with link.serve(self.handle_client, self.host, self.port, ssl=ssl_context):
+                await asyncio.Future()
+        finally:
+            if not timer_result:
+                winmm.timeEndPeriod(1)
 
     def stop(self):
         self.running = False
